@@ -8,7 +8,9 @@ use lazy_static::lazy_static;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_till, take_until, take_while},
-    character::complete::{char, hex_digit1, multispace1, one_of, satisfy, space0, space1, u8},
+    character::complete::{
+        char, digit1, hex_digit1, multispace1, one_of, satisfy, space0, space1, u8,
+    },
     combinator::{fail, map, map_res, opt, peek, recognize, success, value},
     multi::{many0, many1, separated_list0},
     sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
@@ -115,7 +117,7 @@ enum SpaceType {
 struct VarNodeDef {
     space_sym: String,
     offset: u64,
-    size: u8,
+    size: u64,
     names: Vec<String>,
 }
 
@@ -472,15 +474,15 @@ fn string_ref(input: &str) -> IResult<&str, &str> {
     delimited(char(q), take_till(move |c| c == q), char(q))(input)
 }
 
-fn string_or_identifier_ref(input: &str) -> IResult<&str, &str> {
-    alt((string_ref, identifier_ref))(input)
+fn preprocessor_value(input: &str) -> IResult<&str, &str> {
+    alt((string_ref, digit1))(input)
 }
 
 fn string(input: &str) -> IResult<&str, String> {
     map(ws(string_ref), ToOwned::to_owned)(input)
 }
 
-fn preprocess_expression<'a>(
+fn preprocess_expression_atom<'a>(
     input: &'a str,
     defs: &HashMap<String, String>,
 ) -> IResult<&'a str, bool> {
@@ -505,6 +507,18 @@ fn preprocess_expression<'a>(
     ))(input)
 }
 
+fn preprocess_expression<'a>(
+    input: &'a str,
+    defs: &HashMap<String, String>,
+) -> IResult<&'a str, bool> {
+    op_prec(
+        &|input| preprocess_expression_atom(input, defs),
+        0,
+        &OpTable::new(&[&[("||", |l, r| *l || *r)], &[("&&", |l, r| *l && *r)]]),
+        input,
+    )
+}
+
 // Assume we are at the start of the line
 fn preprocess_directive<'a>(
     input: &'a str,
@@ -521,22 +535,22 @@ fn preprocess_directive<'a>(
             map(
                 preceded(
                     pair(tag("define"), space1),
-                    separated_pair(string_or_identifier_ref, space1, string_ref),
+                    separated_pair(identifier_ref, space1, preprocessor_value),
                 ),
                 |(var_name, value)| Define { var_name, value },
             ),
             map(
-                preceded(pair(tag("undef"), space1), string_or_identifier_ref),
+                preceded(pair(tag("undef"), space1), identifier_ref),
                 |var_name| Undef { var_name },
             ),
             map(
-                preceded(pair(tag("ifdef"), space1), string_or_identifier_ref),
+                preceded(pair(tag("ifdef"), space1), identifier_ref),
                 |var_name| IfDef {
                     condition: defs.contains_key(var_name),
                 },
             ),
             map(
-                preceded(pair(tag("ifndef"), space1), string_or_identifier_ref),
+                preceded(pair(tag("ifndef"), space1), identifier_ref),
                 |var_name| IfNDef {
                     condition: defs.contains_key(var_name),
                 },
@@ -786,7 +800,7 @@ fn parse_var_node_def(input: &str) -> IResult<&str, VarNodeDef> {
         tuple((
             preceded(tok("define"), identifier),
             preceded(pair(tok("offset"), tok("=")), parse_u64),
-            preceded(pair(tok("size"), tok("=")), ws(u8)),
+            preceded(pair(tok("size"), tok("=")), parse_u64),
             terminated(identifier_list, tok(";")),
         )),
         |(space_sym, offset, size, names)| VarNodeDef {
@@ -1514,7 +1528,7 @@ impl<E> OpTable<E> {
     }
 }
 
-fn op_prec<'a, F: 'a, E>(
+fn op_prec<'a, F, E>(
     e: &F,
     min_prec: usize,
     ops: &OpTable<E>,
@@ -1533,7 +1547,7 @@ where
         ops.lookup(t)
     }
 
-    fn op_prec_1<'a, F: 'a, E>(
+    fn op_prec_1<'a, F, E>(
         mut lhs: E,
         min_prec: usize,
         ops: &OpTable<E>,
