@@ -1,0 +1,9 @@
+[package]
+name = "ghidra-sleigh"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lazy_static = "1.4.0"
+nom = "7.1.1"
+regex = "1.7.0"
