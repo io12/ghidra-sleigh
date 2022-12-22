@@ -1442,11 +1442,52 @@ fn parse_macro_start(input: &str) -> IResult<&str, MacroStart> {
     )(input)
 }
 
+fn parse_with_block_start(input: &str) -> IResult<&str, WithBlockStart> {
+    map(
+        delimited(
+            tok("with"),
+            tuple((
+                terminated(opt(identifier), tok(":")),
+                opt(parse_p_equation),
+                parse_context_block,
+            )),
+            tok("{"),
+        ),
+        |(id, bitpat, block)| WithBlockStart { id, bitpat, block },
+    )(input)
+}
+
+fn parse_definition_or_constructorlike(input: &str) -> IResult<&str, DefinitionOrConstructorlike> {
+    alt((
+        map(parse_definition, DefinitionOrConstructorlike::Definition),
+        map(
+            parse_constructorlike,
+            DefinitionOrConstructorlike::Constructorlike,
+        ),
+    ))(input)
+}
+
+fn parse_with_block_mid(input: &str) -> IResult<&str, WithBlockMid> {
+    map(
+        pair(
+            parse_with_block_start,
+            many0(parse_definition_or_constructorlike),
+        ),
+        |(start, items)| WithBlockMid { start, items },
+    )(input)
+}
+
+fn parse_with_block(input: &str) -> IResult<&str, WithBlock> {
+    map(terminated(parse_with_block_mid, tok("}")), |mid| {
+        WithBlock { mid }
+    })(input)
+}
+
 fn parse_constructorlike(input: &str) -> IResult<&str, Constructorlike> {
     alt((
         map(parse_constructor, Constructorlike::Constructor),
         map(parse_macro_def, Constructorlike::MacroDef),
-        // map(todo!(), Constructorlike::WithBlock),
+        map(parse_with_block, Constructorlike::WithBlock),
     ))(input)
 }
 
