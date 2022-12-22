@@ -9,7 +9,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_till, take_until, take_while},
     character::complete::{
-        char, digit1, hex_digit1, multispace1, one_of, satisfy, space0, space1, u8,
+        char, digit1, hex_digit1, i8, multispace1, one_of, satisfy, space0, space1, u8,
     },
     combinator::{fail, map, map_res, opt, peek, recognize, success, value},
     multi::{many0, many1, separated_list0},
@@ -576,10 +576,13 @@ fn preprocess_directive<'a>(
 
 fn preprocess_expand_macros<'a>(line: &'a str, defs: &HashMap<String, String>) -> String {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"\$\(([a-zA-Z0-9_.][a-zA-Z0-9_.]*)\)").unwrap();
+        static ref RE: Regex = Regex::new(r"\$\(([a-zA-Z0-9_.]+)\)").unwrap();
     }
-    RE.replace_all(line, |caps: &regex::Captures| &defs[&caps[1]])
-        .into_owned()
+    RE.replace_all(line, |caps: &regex::Captures| {
+        let cap = &caps[1];
+        defs.get(cap).expect(cap)
+    })
+    .into_owned()
 }
 
 fn preprocess_internal(input: impl BufRead, out: &mut String, defs: &mut HashMap<String, String>) {
@@ -587,7 +590,7 @@ fn preprocess_internal(input: impl BufRead, out: &mut String, defs: &mut HashMap
     for line in input.lines() {
         let line = line.unwrap();
         let current_state = *state_stack.last().unwrap();
-        let line = if current_state {
+        let line = if current_state && !line.starts_with('#') {
             preprocess_expand_macros(&line, defs)
         } else {
             line
@@ -784,6 +787,13 @@ fn parse_context_def(input: &str) -> IResult<&str, ContextDef> {
     )(input)
 }
 
+fn int_b_list(input: &str) -> IResult<&str, Vec<i8>> {
+    alt((
+        map(i8, |i| vec![i]),
+        delimited(tok("["), many1(ws(i8)), tok("]")),
+    ))(input)
+}
+
 fn identifier_list(input: &str) -> IResult<&str, Vec<String>> {
     alt((
         map(identifier, |name| vec![name]),
@@ -823,6 +833,20 @@ fn parse_p_code_op_def(input: &str) -> IResult<&str, PCodeOpDef> {
     )(input)
 }
 
+fn parse_value_attach(input: &str) -> IResult<&str, ValueAttach> {
+    map(
+        delimited(
+            pair(tok("attach"), tok("values")),
+            pair(identifier_list, int_b_list),
+            tok(";"),
+        ),
+        |(value_list, int_b_list)| ValueAttach {
+            value_list,
+            int_b_list,
+        },
+    )(input)
+}
+
 fn parse_name_attach(input: &str) -> IResult<&str, NameAttach> {
     map(
         delimited(
@@ -858,6 +882,7 @@ fn parse_definition(input: &str) -> IResult<&str, Definition> {
         map(parse_space_def, Definition::SpaceDef),
         map(parse_var_node_def, Definition::VarNodeDef),
         map(parse_p_code_op_def, Definition::PCodeOpDef),
+        map(parse_value_attach, Definition::ValueAttach),
         map(parse_name_attach, Definition::NameAttach),
         map(parse_var_attach, Definition::VarAttach),
     ))(input)
