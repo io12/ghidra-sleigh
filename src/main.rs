@@ -174,9 +174,14 @@ enum DisplayToken {
 }
 
 #[derive(Debug, Clone)]
+struct DisplaySection {
+    toks: Vec<DisplayToken>,
+}
+
+#[derive(Debug, Clone)]
 struct Constructor {
     id: Option<String>,
-    display: Vec<DisplayToken>,
+    display: DisplaySection,
     p_equation: PEquation,
     context_block: ContextBlock,
     rtl_body: RtlBody,
@@ -999,11 +1004,18 @@ fn parse_display_token(input: &str) -> IResult<&str, DisplayToken> {
     ))(input)
 }
 
+fn parse_display_section(input: &str) -> IResult<&str, DisplaySection> {
+    map(
+        ws(many_till(parse_display_token, tok("is"))),
+        |(toks, _)| DisplaySection { toks },
+    )(input)
+}
+
 fn parse_constructor(input: &str) -> IResult<&str, Constructor> {
     map(
         tuple((
             terminated(opt(identifier), char(':')),
-            map(ws(many_till(parse_display_token, tok("is"))), |(d, _)| d),
+            parse_display_section,
             parse_p_equation,
             parse_context_block,
             parse_rtl_body,
@@ -1910,7 +1922,7 @@ fn compute_token_symbol(ctx: &SleighContext, symbol: &str, input: &[u8]) -> u8 {
     let high = *high as u64;
     let mask = (((1 << (high + 1)) - 1) - ((1 << low) - 1)) as u8;
     assert!(high <= 7);
-    input.get(0).unwrap() & mask
+    (input.get(0).unwrap() & mask) >> low
 }
 
 fn compute_p_expression(ctx: &SleighContext, expr: &PExpression) -> u64 {
@@ -1988,12 +2000,53 @@ fn check_p_equation(ctx: &SleighContext, p_eq: &PEquation, input: &[u8]) -> bool
     }
 }
 
-fn disasm_insn<'a>(ctx: &'a SleighContext, input: &[u8]) -> &'a [DisplayToken] {
-    &ctx.constructors
+fn p_equation_has_sym(p_eq: &PEquation, target_symbol: &str) -> bool {
+    match p_eq {
+        PEquation::EllEq(ell_eq) => {
+            let EllEq {
+                ellipsis: _,
+                ell_rt:
+                    EllRt {
+                        atomic,
+                        ellipsis: _,
+                    },
+            } = &**ell_eq;
+            match atomic {
+                Atomic::Constraint(constraint) => match constraint {
+                    Constraint::Symbol(symbol) => symbol == target_symbol,
+                    _ => false,
+                },
+                Atomic::Parenthesized(p_eq) => p_equation_has_sym(p_eq, target_symbol),
+            }
+        }
+        PEquation::And(l, r) | PEquation::Or(l, r) | PEquation::Cat(l, r) => {
+            let l = p_equation_has_sym(l, target_symbol);
+            let r = p_equation_has_sym(r, target_symbol);
+            l || r
+        }
+    }
+}
+
+fn disasm_insn(ctx: &SleighContext, table_id: Option<&str>, input: &[u8], out: &mut String) {
+    dbg!(table_id, compute_token_symbol(ctx, "bbb", input));
+    let constructor = &ctx
+        .constructors
         .iter()
-        .find(|c| c.id.is_none() && check_p_equation(ctx, &c.p_equation, input))
-        .unwrap()
-        .display
+        .find(|c| c.id.as_deref() == table_id && check_p_equation(ctx, &c.p_equation, input))
+        .unwrap();
+    for tok in &constructor.display.toks {
+        match tok {
+            DisplayToken::Caret => {}
+            DisplayToken::String(s) => out.push_str(s),
+            DisplayToken::Char(c) => out.push(*c),
+            DisplayToken::Space => out.push(' '),
+            DisplayToken::Symbol(s) => {
+                if p_equation_has_sym(&constructor.p_equation, s) {
+                    disasm_insn(ctx, Some(s), input, out)
+                }
+            }
+        }
+    }
 }
 
 fn main() {
@@ -2001,6 +2054,7 @@ fn main() {
     let (remaining, sleigh) = parse_sleigh(&pp).unwrap();
     assert!(remaining.is_empty());
     let ctx = make_context(&sleigh);
-    let dis = disasm_insn(&ctx, &[0x86]);
-    println!("{dis:?}");
+    let mut dis = String::new();
+    disasm_insn(&ctx, None, &[0x96], &mut dis);
+    println!("{dis}");
 }
