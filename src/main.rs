@@ -11,7 +11,7 @@ use nom::{
     character::complete::{
         char, digit1, hex_digit1, i8, multispace1, one_of, satisfy, space0, space1, u8,
     },
-    combinator::{fail, map, map_res, opt, peek, recognize, success, value},
+    combinator::{fail, map, map_opt, map_res, opt, peek, recognize, success, value},
     multi::{many0, many1, many_till, separated_list0},
     sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     IResult,
@@ -63,7 +63,7 @@ enum Definition {
 #[derive(Debug, Clone)]
 struct TokenDef {
     name: String,
-    i: u8,
+    size: u8,
     endian: Option<Endian>,
     fields: Vec<FieldDef>,
 }
@@ -826,15 +826,21 @@ fn parse_token_def(input: &str) -> IResult<&str, TokenDef> {
             pair(tok("define"), tok("token")),
             tuple((
                 identifier,
-                delimited(char('('), ws(u8), char(')')),
+                map_opt(delimited(char('('), ws(u8), char(')')), |size| {
+                    if size % 8 == 0 {
+                        Some(size / 8)
+                    } else {
+                        None
+                    }
+                }),
                 opt(preceded(pair(tok("endian"), tok("=")), parse_endian)),
                 many1(parse_field_def),
             )),
             tok(";"),
         ),
-        |(name, i, endian, fields)| TokenDef {
+        |(name, size, endian, fields)| TokenDef {
             name,
-            i,
+            size,
             endian,
             fields,
         },
@@ -1818,7 +1824,8 @@ struct OffAndSize {
     size: u64,
 }
 
-struct BitRange {
+struct TokenField {
+    token_size: u8,
     low: u8,
     high: u8,
 }
@@ -1826,7 +1833,7 @@ struct BitRange {
 struct SleighContext {
     endian: Endian,
     align: u8,
-    tokens: HashMap<String, BitRange>,
+    tokens: HashMap<String, TokenField>,
     contexts: HashMap<String, ContextDef>,
     spaces: HashMap<String, SpaceDef>,
     default_space: SpaceDef,
@@ -1850,11 +1857,17 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
             Def::EndianDef(endian_def) => endian = Some(endian_def.endian.clone()),
             Def::AlignDef(align_def) => align = Some(align_def.align),
             Def::Definition(def) => match def {
-                Definition::TokenDef(token_def) => {
-                    for field in &token_def.fields {
+                Definition::TokenDef(TokenDef {
+                    name: _,
+                    size,
+                    endian: _,
+                    fields,
+                }) => {
+                    for field in fields {
                         tokens.insert(
                             field.name.clone(),
-                            BitRange {
+                            TokenField {
+                                token_size: *size,
                                 low: field.low,
                                 high: field.high,
                             },
@@ -1917,7 +1930,11 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
 }
 
 fn compute_token_symbol(ctx: &SleighContext, symbol: &str, input: &[u8]) -> u8 {
-    let BitRange { low, high } = ctx.tokens.get(symbol).unwrap();
+    let TokenField {
+        token_size: _,
+        low,
+        high,
+    } = ctx.tokens.get(symbol).unwrap();
     let low = *low as u64;
     let high = *high as u64;
     let mask = (((1 << (high + 1)) - 1) - ((1 << low) - 1)) as u8;
@@ -2000,32 +2017,36 @@ fn check_p_equation(ctx: &SleighContext, p_eq: &PEquation, input: &[u8]) -> bool
     }
 }
 
-fn p_equation_has_sym(p_eq: &PEquation, target_symbol: &str) -> bool {
-    match p_eq {
-        PEquation::EllEq(ell_eq) => {
-            let EllEq {
-                ellipsis: _,
-                ell_rt:
-                    EllRt {
-                        atomic,
-                        ellipsis: _,
-                    },
-            } = &**ell_eq;
-            match atomic {
-                Atomic::Constraint(constraint) => match constraint {
-                    Constraint::Symbol(symbol) => symbol == target_symbol,
-                    _ => false,
-                },
-                Atomic::Parenthesized(p_eq) => p_equation_has_sym(p_eq, target_symbol),
-            }
-        }
-        PEquation::And(l, r) | PEquation::Or(l, r) | PEquation::Cat(l, r) => {
-            let l = p_equation_has_sym(l, target_symbol);
-            let r = p_equation_has_sym(r, target_symbol);
-            l || r
-        }
-    }
-}
+// fn p_equation_symm_off(p_eq: &PEquation, target_symbol: &str) -> (OffAndSize, bool) {
+//     match p_eq {
+//         PEquation::EllEq(ell_eq) => {
+//             let EllEq {
+//                 ellipsis: _,
+//                 ell_rt:
+//                     EllRt {
+//                         atomic,
+//                         ellipsis: _,
+//                     },
+//             } = &**ell_eq;
+//             match atomic {
+//                 Atomic::Constraint(constraint) => match constraint {
+//                     Constraint::Symbol(symbol) if symbol == target_symbol => Some(0),
+//                     _ => None,
+//                 },
+//                 Atomic::Parenthesized(p_eq) => p_equation_symm_off(p_eq, target_symbol),
+//             }
+//         }
+//         PEquation::And(l, r) | PEquation::Or(l, r) => {
+//             let l = p_equation_symm_off(l, target_symbol);
+//             let r = p_equation_symm_off(r, target_symbol);
+//             l.or(r)
+//         }
+//         PEquation::Cat(l, r) => {
+//             let l = p_equation_symm_off(l, target_symbol);
+//             let r = p_equation_symm_off(r, target_symbol);
+//         }
+//     }
+// }
 
 fn disasm_insn(ctx: &SleighContext, table_id: Option<&str>, input: &[u8], out: &mut String) {
     dbg!(table_id, compute_token_symbol(ctx, "bbb", input));
@@ -2041,9 +2062,10 @@ fn disasm_insn(ctx: &SleighContext, table_id: Option<&str>, input: &[u8], out: &
             DisplayToken::Char(c) => out.push(*c),
             DisplayToken::Space => out.push(' '),
             DisplayToken::Symbol(s) => {
-                if p_equation_has_sym(&constructor.p_equation, s) {
-                    disasm_insn(ctx, Some(s), input, out)
-                }
+                todo!()
+                // if p_equation_symm_off(&constructor.p_equation, s) {
+                //     disasm_insn(ctx, Some(s), input, out)
+                // }
             }
         }
     }
