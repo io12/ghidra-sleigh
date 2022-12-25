@@ -9,7 +9,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_till, take_until, take_while},
     character::complete::{
-        anychar, char, digit1, hex_digit1, i8, multispace1, one_of, satisfy, space0, space1, u8,
+        char, digit1, hex_digit1, i8, multispace1, one_of, satisfy, space0, space1, u8,
     },
     combinator::{fail, map, map_res, opt, peek, recognize, success, value},
     multi::{many0, many1, many_till, separated_list0},
@@ -165,9 +165,18 @@ enum Constructorlike {
 }
 
 #[derive(Debug, Clone)]
+enum DisplayToken {
+    Caret,
+    String(String),
+    Char(char),
+    Space,
+    Symbol(String),
+}
+
+#[derive(Debug, Clone)]
 struct Constructor {
     id: Option<String>,
-    display: String,
+    display: Vec<DisplayToken>,
     p_equation: PEquation,
     context_block: ContextBlock,
     rtl_body: RtlBody,
@@ -545,8 +554,12 @@ fn identifier_ref(input: &str) -> IResult<&str, &str> {
     ))(input)
 }
 
+fn identifier_no_ws(input: &str) -> IResult<&str, String> {
+    map(identifier_ref, ToOwned::to_owned)(input)
+}
+
 fn identifier(input: &str) -> IResult<&str, String> {
-    map(ws(identifier_ref), ToOwned::to_owned)(input)
+    ws(identifier_no_ws)(input)
 }
 
 fn string_ref(input: &str) -> IResult<&str, &str> {
@@ -558,8 +571,12 @@ fn preprocessor_value(input: &str) -> IResult<&str, &str> {
     alt((string_ref, digit1))(input)
 }
 
+fn string_no_ws(input: &str) -> IResult<&str, String> {
+    map(string_ref, ToOwned::to_owned)(input)
+}
+
 fn string(input: &str) -> IResult<&str, String> {
-    map(ws(string_ref), ToOwned::to_owned)(input)
+    ws(string_no_ws)(input)
 }
 
 fn preprocess_expression_atom<'a>(
@@ -969,13 +986,24 @@ fn parse_definition(input: &str) -> IResult<&str, Definition> {
     ))(input)
 }
 
+fn parse_display_token(input: &str) -> IResult<&str, DisplayToken> {
+    alt((
+        value(DisplayToken::Caret, char('^')),
+        map(string_no_ws, DisplayToken::String),
+        map(
+            one_of("~!@#$%&*()-=+[]{}|;:<>?,/0123456789"),
+            DisplayToken::Char,
+        ),
+        value(DisplayToken::Space, multispace1),
+        map(identifier_no_ws, DisplayToken::Symbol),
+    ))(input)
+}
+
 fn parse_constructor(input: &str) -> IResult<&str, Constructor> {
     map(
         tuple((
             terminated(opt(identifier), char(':')),
-            map(ws(many_till(anychar, tok("is"))), |(s, _)| {
-                s.iter().collect()
-            }),
+            map(ws(many_till(parse_display_token, tok("is"))), |(d, _)| d),
             parse_p_equation,
             parse_context_block,
             parse_rtl_body,
@@ -1960,7 +1988,7 @@ fn check_p_equation(ctx: &SleighContext, p_eq: &PEquation, input: &[u8]) -> bool
     }
 }
 
-fn disasm_insn<'a>(ctx: &'a SleighContext, input: &[u8]) -> &'a str {
+fn disasm_insn<'a>(ctx: &'a SleighContext, input: &[u8]) -> &'a [DisplayToken] {
     &ctx.constructors
         .iter()
         .find(|c| c.id.is_none() && check_p_equation(ctx, &c.p_equation, input))
@@ -1974,5 +2002,5 @@ fn main() {
     assert!(remaining.is_empty());
     let ctx = make_context(&sleigh);
     let dis = disasm_insn(&ctx, &[0x86]);
-    println!("{dis}");
+    println!("{dis:?}");
 }
