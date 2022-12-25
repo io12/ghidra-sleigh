@@ -1858,7 +1858,7 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
                 Constructorlike::Constructor(constructor) => {
                     constructors.push(constructor.clone());
                 }
-                Constructorlike::MacroDef(_) => todo!(),
+                Constructorlike::MacroDef(_) => {}
                 Constructorlike::WithBlock(_) => todo!(),
             },
         }
@@ -1879,8 +1879,10 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
 
 fn compute_token_symbol(ctx: &SleighContext, symbol: &str, input: &[u8]) -> u8 {
     let BitRange { low, high } = ctx.tokens.get(symbol).unwrap();
-    let mask = ((1 << (high + 1)) - 1) - ((1 << low) - 1);
-    assert!(*high <= 7);
+    let low = *low as u64;
+    let high = *high as u64;
+    let mask = (((1 << (high + 1)) - 1) - ((1 << low) - 1)) as u8;
+    assert!(high <= 7);
     input.get(0).unwrap() & mask
 }
 
@@ -1888,51 +1890,90 @@ fn compute_p_expression(ctx: &SleighContext, expr: &PExpression) -> u64 {
     match expr {
         PExpression::ConstantValue(v) => *v,
         PExpression::Symbol(_) => todo!(),
-        _ => todo!(),
+        PExpression::Bin(binary_expr) => {
+            let PExpressionBin { op, l, r } = &**binary_expr;
+            let l = compute_p_expression(ctx, l);
+            let r = compute_p_expression(ctx, r);
+            match op {
+                PExpressionBinOp::Add => l + r,
+                PExpressionBinOp::Sub => l - r,
+                PExpressionBinOp::Mult => l * r,
+                PExpressionBinOp::LeftShift => l << r,
+                PExpressionBinOp::RightShift => l >> r,
+                PExpressionBinOp::And => l & r,
+                PExpressionBinOp::Or => l | r,
+                PExpressionBinOp::Xor => l ^ r,
+                PExpressionBinOp::Div => l / r,
+            }
+        }
+        PExpression::Unary(unary_expr) => {
+            let PExpressionUnary { op, operand } = &**unary_expr;
+            let operand = compute_p_expression(ctx, operand);
+            match op {
+                PExpressionUnaryOp::Minus => -(operand as i64) as u64,
+                PExpressionUnaryOp::Not => !operand,
+            }
+        }
     }
 }
 
-fn check_p_equation(ctx: &SleighContext, p_eq: PEquation, input: &[u8]) -> bool {
+fn check_p_equation(ctx: &SleighContext, p_eq: &PEquation, input: &[u8]) -> bool {
     match p_eq {
         PEquation::EllEq(ell_eq) => {
             let EllEq {
-                ellipsis: ellipsis_left,
+                ellipsis: _,
                 ell_rt:
                     EllRt {
                         atomic,
-                        ellipsis: ellipsis_right,
+                        ellipsis: _,
                     },
-            } = *ell_eq;
+            } = &**ell_eq;
             match atomic {
                 Atomic::Constraint(constraint) => match constraint {
                     Constraint::Compare(ConstraintCompare { op, symbol, expr }) => {
                         let l = compute_token_symbol(ctx, &symbol, input);
                         let r = compute_p_expression(ctx, &expr);
-                        todo!()
+                        let l = l as u64;
+                        match op {
+                            ConstraintCompareOp::Equal => l == r,
+                            ConstraintCompareOp::NotEqual => l != r,
+                            ConstraintCompareOp::Less => l < r,
+                            ConstraintCompareOp::LessEqual => l <= r,
+                            ConstraintCompareOp::Greater => l > r,
+                            ConstraintCompareOp::GreaterEqual => l >= r,
+                        }
                     }
                     Constraint::Symbol(_) => true,
                 },
-                Atomic::Parenthesized(p_eq) => check_p_equation(ctx, p_eq, input),
+                Atomic::Parenthesized(p_eq) => check_p_equation(ctx, &p_eq, input),
             }
         }
-        PEquation::And(l, r) => {
-            check_p_equation(ctx, *l, input) && check_p_equation(ctx, *r, input)
+        PEquation::And(l, r) | PEquation::Cat(l, r) => {
+            let l = check_p_equation(ctx, &*l, input);
+            let r = check_p_equation(ctx, &*r, input);
+            l && r
         }
-        PEquation::Or(l, r) => check_p_equation(ctx, *l, input) || check_p_equation(ctx, *r, input),
-        PEquation::Cat(_, _) => todo!(),
+        PEquation::Or(l, r) => {
+            let l = check_p_equation(ctx, &*l, input);
+            let r = check_p_equation(ctx, &*r, input);
+            l || r
+        }
     }
 }
 
-fn disasm_insn(ctx: &SleighContext, bytes: &[u8]) -> String {
-    ctx.constructors
+fn disasm_insn<'a>(ctx: &'a SleighContext, input: &[u8]) -> &'a str {
+    &ctx.constructors
         .iter()
-        .find(|c| c.id.is_none() && todo!())
-        .unwrap();
-    todo!()
+        .find(|c| c.id.is_none() && check_p_equation(ctx, &c.p_equation, input))
+        .unwrap()
+        .display
 }
 
 fn main() {
     let pp = preprocess(std::io::stdin().lock());
-    let x = parse_sleigh(&pp);
-    println!("{x:?}");
+    let (remaining, sleigh) = parse_sleigh(&pp).unwrap();
+    assert!(remaining.is_empty());
+    let ctx = make_context(&sleigh);
+    let dis = disasm_insn(&ctx, &[0x86]);
+    println!("{dis}");
 }
