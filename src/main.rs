@@ -182,17 +182,29 @@ struct DisplaySection {
 struct Constructor {
     id: Option<String>,
     display: DisplaySection,
-    p_equation: PEquation,
+    p_equation: PatternEquation,
     context_block: ContextBlock,
     rtl_body: RtlBody,
 }
 
 #[derive(Debug, Clone)]
-enum PEquation {
+enum PatternEquationBinOp {
+    And,
+    Or,
+    Cat,
+}
+
+#[derive(Debug, Clone)]
+struct PatternEquationBin {
+    op: PatternEquationBinOp,
+    l: PatternEquation,
+    r: PatternEquation,
+}
+
+#[derive(Debug, Clone)]
+enum PatternEquation {
     EllEq(Box<EllEq>),
-    And(Box<PEquation>, Box<PEquation>),
-    Or(Box<PEquation>, Box<PEquation>),
-    Cat(Box<PEquation>, Box<PEquation>),
+    Bin(Box<PatternEquationBin>),
 }
 
 #[derive(Debug, Clone)]
@@ -210,7 +222,7 @@ struct EllRt {
 #[derive(Debug, Clone)]
 enum Atomic {
     Constraint(Constraint),
-    Parenthesized(PEquation),
+    Parenthesized(PatternEquation),
 }
 
 #[derive(Debug, Clone)]
@@ -528,7 +540,7 @@ struct WithBlockMid {
 #[derive(Debug, Clone)]
 struct WithBlockStart {
     id: Option<String>,
-    bitpat: Option<PEquation>,
+    bitpat: Option<PatternEquation>,
     block: ContextBlock,
 }
 
@@ -1140,19 +1152,19 @@ fn parse_ellipsis(input: &str) -> IResult<&str, bool> {
     map(opt(tok("...")), |o| o.is_some())(input)
 }
 
-fn parse_p_equation_ell_eq(input: &str) -> IResult<&str, PEquation> {
-    map(parse_ell_eq, |e| PEquation::EllEq(Box::new(e)))(input)
+fn parse_p_equation_ell_eq(input: &str) -> IResult<&str, PatternEquation> {
+    map(parse_ell_eq, |e| PatternEquation::EllEq(Box::new(e)))(input)
 }
 
-fn parse_p_equation(input: &str) -> IResult<&str, PEquation> {
+fn parse_p_equation(input: &str) -> IResult<&str, PatternEquation> {
     op_prec(
         &parse_p_equation_ell_eq,
-        &|op: fn(Box<PEquation>, Box<PEquation>) -> PEquation, l, r| op(Box::new(l), Box::new(r)),
+        &|op, l, r| PatternEquation::Bin(Box::new(PatternEquationBin { op, l, r })),
         0,
         &OpTable::new(&[
-            &[("|", PEquation::Or)],
-            &[(";", PEquation::Cat)],
-            &[("&", PEquation::And)],
+            &[("|", PatternEquationBinOp::Or)],
+            &[(";", PatternEquationBinOp::Cat)],
+            &[("&", PatternEquationBinOp::And)],
         ]),
         input,
     )
@@ -1973,9 +1985,9 @@ fn compute_p_expression(ctx: &SleighContext, expr: &PExpression) -> u64 {
     }
 }
 
-fn check_p_equation(ctx: &SleighContext, p_eq: &PEquation, input: &[u8]) -> bool {
+fn check_p_equation(ctx: &SleighContext, p_eq: &PatternEquation, input: &[u8]) -> bool {
     match p_eq {
-        PEquation::EllEq(ell_eq) => {
+        PatternEquation::EllEq(ell_eq) => {
             let EllEq {
                 ellipsis: _,
                 ell_rt:
@@ -2004,15 +2016,14 @@ fn check_p_equation(ctx: &SleighContext, p_eq: &PEquation, input: &[u8]) -> bool
                 Atomic::Parenthesized(p_eq) => check_p_equation(ctx, &p_eq, input),
             }
         }
-        PEquation::And(l, r) | PEquation::Cat(l, r) => {
-            let l = check_p_equation(ctx, &*l, input);
-            let r = check_p_equation(ctx, &*r, input);
-            l && r
-        }
-        PEquation::Or(l, r) => {
-            let l = check_p_equation(ctx, &*l, input);
-            let r = check_p_equation(ctx, &*r, input);
-            l || r
+        PatternEquation::Bin(bin) => {
+            let PatternEquationBin { op, l, r } = &**bin;
+            let l = check_p_equation(ctx, &l, input);
+            let r = check_p_equation(ctx, &r, input);
+            match op {
+                PatternEquationBinOp::And | PatternEquationBinOp::Cat => l && r,
+                PatternEquationBinOp::Or => l || r,
+            }
         }
     }
 }
