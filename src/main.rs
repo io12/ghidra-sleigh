@@ -18,12 +18,12 @@ use nom::{
 };
 use regex::Regex;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Sleigh {
     defs: Vec<Def>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Def {
     EndianDef(EndianDef),
     AlignDef(AlignDef),
@@ -31,7 +31,7 @@ enum Def {
     Constructorlike(Constructorlike),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct EndianDef {
     endian: Endian,
 }
@@ -42,12 +42,12 @@ enum Endian {
     Little,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct AlignDef {
     align: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Definition {
     TokenDef(TokenDef),
     ContextDef(ContextDef),
@@ -60,7 +60,7 @@ enum Definition {
     VarAttach(VarAttach),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TokenDef {
     name: String,
     i: u8,
@@ -68,7 +68,7 @@ struct TokenDef {
     fields: Vec<FieldDef>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FieldDef {
     name: String,
     low: u8,
@@ -77,19 +77,19 @@ struct FieldDef {
     base: Option<Base>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Base {
     Hex,
     Dec,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ContextDef {
     var_sym: String,
     fields: Vec<ContextFieldDef>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ContextFieldDef {
     name: String,
     low: u8,
@@ -99,7 +99,7 @@ struct ContextFieldDef {
     base: Option<Base>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SpaceDef {
     name: String,
     typ: SpaceType,
@@ -113,7 +113,7 @@ enum SpaceType {
     Register,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VarNodeDef {
     space_sym: String,
     offset: u64,
@@ -121,12 +121,12 @@ struct VarNodeDef {
     names: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BitRangeDef {
     bit_ranges: Vec<BitRangeSingle>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BitRangeSingle {
     name: String,
     var_sym: String,
@@ -134,37 +134,37 @@ struct BitRangeSingle {
     i2: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PCodeOpDef {
     ops: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ValueAttach {
     value_list: Vec<String>,
     int_b_list: Vec<i8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct NameAttach {
     value_list: Vec<String>,
     string_list: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VarAttach {
     value_list: Vec<String>,
     string_list: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Constructorlike {
     Constructor(Constructor),
     MacroDef(MacroDef),
     WithBlock(WithBlock),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Constructor {
     id: Option<String>,
     display: String,
@@ -173,7 +173,7 @@ struct Constructor {
     rtl_body: RtlBody,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum PEquation {
     EllEq(Box<EllEq>),
     And(Box<PEquation>, Box<PEquation>),
@@ -181,101 +181,135 @@ enum PEquation {
     Cat(Box<PEquation>, Box<PEquation>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct EllEq {
     ellipsis: bool,
     ell_rt: EllRt,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct EllRt {
     atomic: Atomic,
     ellipsis: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Atomic {
     Constraint(Constraint),
     Parenthesized(PEquation),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+enum ConstraintCompareOp {
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
+#[derive(Debug, Clone)]
+struct ConstraintCompare {
+    op: ConstraintCompareOp,
+    symbol: String,
+    expr: PExpression,
+}
+
+#[derive(Debug, Clone)]
 enum Constraint {
-    Equal(String, PExpression),
-    NotEqual(String, PExpression),
-    Less(String, PExpression),
-    LessEqual(String, PExpression),
-    Greater(String, PExpression),
-    GreaterEqual(String, PExpression),
+    Compare(ConstraintCompare),
     Symbol(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+enum PExpressionBinOp {
+    Add,
+    Sub,
+    Mult,
+    LeftShift,
+    RightShift,
+    And,
+    Or,
+    Xor,
+    Div,
+}
+
+#[derive(Debug, Clone)]
+struct PExpressionBin {
+    op: PExpressionBinOp,
+    l: PExpression,
+    r: PExpression,
+}
+
+#[derive(Debug, Clone)]
+enum PExpressionUnaryOp {
+    Minus,
+    Not,
+}
+
+#[derive(Debug, Clone)]
+struct PExpressionUnary {
+    op: PExpressionUnaryOp,
+    operand: PExpression,
+}
+
+#[derive(Debug, Clone)]
 enum PExpression {
     ConstantValue(u64),
     Symbol(String),
-    Parenthesized(Box<PExpression>),
-    Add(Box<PExpression>, Box<PExpression>),
-    Sub(Box<PExpression>, Box<PExpression>),
-    Mult(Box<PExpression>, Box<PExpression>),
-    LeftShift(Box<PExpression>, Box<PExpression>),
-    RightShift(Box<PExpression>, Box<PExpression>),
-    And(Box<PExpression>, Box<PExpression>),
-    Or(Box<PExpression>, Box<PExpression>),
-    Xor(Box<PExpression>, Box<PExpression>),
-    Div(Box<PExpression>, Box<PExpression>),
-    Minus(Box<PExpression>),
-    Not(Box<PExpression>),
+    Bin(Box<PExpressionBin>),
+    Unary(Box<PExpressionUnary>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ContextBlock {
     context_list: Vec<ContextListItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ContextListItem {
     Eq(String, PExpression),
     Set(String, String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RtlBody {
     StandaloneSection(Rtl),
     FinalNamedSection(RtlContinue, RtlMid),
     OpUnimpl,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Rtl {
     mid: RtlMid,
     export: Option<RtlExport>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RtlExport {
     ExportVarNode(ExportVarNode),
     SizedStar(SizedStar, String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ExportVarNode {
     Symbol { name: String },
     Tpl { i1: u8, i2: u8 },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RtlMid {
     items: Vec<RtlMidItem>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum RtlMidItem {
     Statement(Statement),
     Local(String, Option<u8>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Statement {
     Assign(String, Option<u8>, Expr),
     LocalAssign(String, Option<u8>, Expr),
@@ -294,18 +328,18 @@ enum Statement {
     Label(Label),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Label {
     name: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum JumpDest {
     Label(Label),
     Symbol(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Expr {
     VarNode(VarNode),
     SizedStar(SizedStar, Box<Expr>),
@@ -371,13 +405,13 @@ enum Expr {
     UserOp { name: String, args: Vec<Expr> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum VarNode {
     SpecificSymbol { name: String },
     IntegerVarNode(Box<IntegerVarNode>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum IntegerVarNode {
     S1(u64),
     S2(u64, u64),
@@ -385,7 +419,7 @@ enum IntegerVarNode {
     Address1(u64, VarNode),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum SizedStar {
     S0,
     S1(u8),
@@ -393,58 +427,58 @@ enum SizedStar {
     S3(String, u8),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RtlContinue {
     first_section: RtlFirstSection,
     items: Vec<(RtlMid, SectionDef)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RtlFirstSection {
     rtl: Rtl,
     section_def: SectionDef,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SectionDef(String);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct MacroDef {
     start: MacroStart,
     rtl: Rtl,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct MacroStart {
     name: String,
     params: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct WithBlock {
     mid: WithBlockMid,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct WithBlockMid {
     start: WithBlockStart,
     items: Vec<DefinitionOrConstructorlike>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct WithBlockStart {
     id: Option<String>,
     bitpat: Option<PEquation>,
     block: ContextBlock,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum DefinitionOrConstructorlike {
     Definition(Definition),
     Constructorlike(Constructorlike),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum PreProcessDirective<'a> {
     Include { file_path: &'a str },
     Define { var_name: &'a str, value: &'a str },
@@ -910,29 +944,41 @@ fn parse_constructor(input: &str) -> IResult<&str, Constructor> {
     )(input)
 }
 
+fn parse_p_expression_unary_op(input: &str) -> IResult<&str, PExpressionUnaryOp> {
+    alt((
+        value(PExpressionUnaryOp::Minus, tok("-")),
+        value(PExpressionUnaryOp::Not, tok("~")),
+    ))(input)
+}
+
+fn parse_p_expression_unary(input: &str) -> IResult<&str, PExpressionUnary> {
+    map(
+        pair(parse_p_expression_unary_op, parse_p_expression_atom),
+        |(op, operand)| PExpressionUnary { op, operand },
+    )(input)
+}
+
 fn parse_p_expression_atom(input: &str) -> IResult<&str, PExpression> {
     alt((
         map(parse_u64, PExpression::ConstantValue),
         map(identifier, PExpression::Symbol),
-        map(
-            delimited(tok("("), |input| parse_p_expression(0, input), tok(")")),
-            |e| PExpression::Parenthesized(Box::new(e)),
-        ),
-        map(preceded(tok("-"), parse_p_expression_atom), |e| {
-            PExpression::Minus(Box::new(e))
-        }),
-        map(preceded(tok("~"), parse_p_expression_atom), |e| {
-            PExpression::Not(Box::new(e))
+        delimited(tok("("), |input| parse_p_expression(0, input), tok(")")),
+        map(parse_p_expression_unary, |e| {
+            PExpression::Unary(Box::new(e))
         }),
     ))(input)
 }
 
 fn parse_p_expression(min_prec: usize, input: &str) -> IResult<&str, PExpression> {
+    let f = |op| |l, r| PExpression::Bin(Box::new(PExpressionBin { op, l, r }));
     op_prec(
         &parse_p_expression_atom,
         min_prec,
         &OpTable::new(&[
-            &[("$or", PExpression::Or), ("|", PExpression::Or)],
+            &[
+                ("$or", f(PExpressionBinOp::Or)),
+                ("|", f(PExpressionBinOp::Or)),
+            ],
             &[("$xor", PExpression::Xor), ("^", PExpression::Xor)],
             &[("$and", PExpression::And), ("&", PExpression::And)],
             &[
@@ -946,32 +992,29 @@ fn parse_p_expression(min_prec: usize, input: &str) -> IResult<&str, PExpression
     )
 }
 
+fn parse_constraint_compare_op(input: &str) -> IResult<&str, ConstraintCompareOp> {
+    alt((
+        value(ConstraintCompareOp::Equal, tok("=")),
+        value(ConstraintCompareOp::NotEqual, tok("!=")),
+        value(ConstraintCompareOp::Less, tok("<")),
+        value(ConstraintCompareOp::LessEqual, tok("<=")),
+        value(ConstraintCompareOp::Greater, tok(">")),
+        value(ConstraintCompareOp::GreaterEqual, tok(">=")),
+    ))(input)
+}
+
+fn parse_constraint_compare(input: &str) -> IResult<&str, ConstraintCompare> {
+    map(
+        tuple((identifier, parse_constraint_compare_op, |input| {
+            parse_p_expression(3, input)
+        })),
+        |(symbol, op, expr)| ConstraintCompare { op, symbol, expr },
+    )(input)
+}
+
 fn parse_constraint(input: &str) -> IResult<&str, Constraint> {
     alt((
-        map(
-            separated_pair(identifier, tok("="), |input| parse_p_expression(3, input)),
-            |(i, e)| Constraint::Equal(i, e),
-        ),
-        map(
-            separated_pair(identifier, tok("!="), |input| parse_p_expression(3, input)),
-            |(i, e)| Constraint::NotEqual(i, e),
-        ),
-        map(
-            separated_pair(identifier, tok("<"), |input| parse_p_expression(3, input)),
-            |(i, e)| Constraint::Less(i, e),
-        ),
-        map(
-            separated_pair(identifier, tok("<="), |input| parse_p_expression(3, input)),
-            |(i, e)| Constraint::LessEqual(i, e),
-        ),
-        map(
-            separated_pair(identifier, tok(">"), |input| parse_p_expression(3, input)),
-            |(i, e)| Constraint::Greater(i, e),
-        ),
-        map(
-            separated_pair(identifier, tok(">="), |input| parse_p_expression(3, input)),
-            |(i, e)| Constraint::GreaterEqual(i, e),
-        ),
+        map(parse_constraint_compare, Constraint::Compare),
         map(identifier, Constraint::Symbol),
     ))(input)
 }
@@ -1564,14 +1607,14 @@ fn hex_u64(input: &str) -> IResult<&str, u64> {
     })(input)
 }
 
-struct OpTable<E: 'static> {
+struct OpTable<O> {
     op_precs: HashMap<&'static str, usize>,
-    op_fns: HashMap<&'static str, fn(Box<E>, Box<E>) -> E>,
+    op_values: HashMap<&'static str, O>,
     op_tags: HashSet<&'static str>,
 }
 
-impl<E> OpTable<E> {
-    fn new(bin_ops: &'static [&'static [(&'static str, fn(Box<E>, Box<E>) -> E)]]) -> Self {
+impl<O: Clone> OpTable<O> {
+    fn new(bin_ops: &'static [&'static [(&'static str, O)]]) -> Self {
         Self {
             op_precs: bin_ops
                 .iter()
@@ -1579,7 +1622,7 @@ impl<E> OpTable<E> {
                 .flat_map(|(prec, i)| i.iter().map(move |i| (prec, i)))
                 .map(|(prec, (tag, _))| (*tag, prec))
                 .collect(),
-            op_fns: bin_ops.iter().flat_map(|i| i.iter()).cloned().collect(),
+            op_values: bin_ops.iter().flat_map(|i| i.iter()).cloned().collect(),
             op_tags: bin_ops
                 .iter()
                 .flat_map(|i| i.iter())
@@ -1661,6 +1704,163 @@ where
 
     let (mut input, lhs) = e(orig_input)?;
     op_prec_1(lhs, min_prec, ops, e, &mut input)
+}
+
+struct OffAndSize {
+    off: u64,
+    size: u64,
+}
+
+struct BitRange {
+    low: u8,
+    high: u8,
+}
+
+struct SleighContext {
+    endian: Endian,
+    align: u8,
+    tokens: HashMap<String, BitRange>,
+    contexts: HashMap<String, ContextDef>,
+    spaces: HashMap<String, SpaceDef>,
+    default_space: SpaceDef,
+    var_nodes: HashMap<String, OffAndSize>,
+    p_code_ops: HashSet<String>,
+    constructors: Vec<Constructor>,
+}
+
+fn make_context(sleigh: &Sleigh) -> SleighContext {
+    let mut endian = None;
+    let mut align = None;
+    let mut tokens = HashMap::new();
+    let mut contexts = HashMap::new();
+    let mut spaces = HashMap::new();
+    let mut default_space = None;
+    let mut var_nodes = HashMap::new();
+    let mut p_code_ops = HashSet::new();
+    let mut constructors = Vec::new();
+    for def in &sleigh.defs {
+        match def {
+            Def::EndianDef(endian_def) => endian = Some(endian_def.endian.clone()),
+            Def::AlignDef(align_def) => align = Some(align_def.align),
+            Def::Definition(def) => match def {
+                Definition::TokenDef(token_def) => {
+                    for field in &token_def.fields {
+                        tokens.insert(
+                            field.name.clone(),
+                            BitRange {
+                                low: field.low,
+                                high: field.high,
+                            },
+                        );
+                    }
+                }
+                Definition::ContextDef(context_def) => {
+                    contexts.insert(context_def.var_sym.clone(), context_def.clone());
+                }
+                Definition::SpaceDef(space_def) => {
+                    spaces.insert(space_def.name.clone(), space_def.clone());
+                    if space_def.default {
+                        default_space = Some(space_def.clone())
+                    }
+                }
+                Definition::VarNodeDef(var_node_def) => {
+                    for (i, name) in var_node_def.names.iter().enumerate() {
+                        if name != "_" {
+                            var_nodes.insert(
+                                name.clone(),
+                                OffAndSize {
+                                    off: var_node_def.offset + i as u64 * var_node_def.size,
+                                    size: var_node_def.size,
+                                },
+                            );
+                        }
+                    }
+                }
+                Definition::BitRangeDef(_) => todo!(),
+                Definition::PCodeOpDef(p_code_op_def) => {
+                    for op in &p_code_op_def.ops {
+                        p_code_ops.insert(op.clone());
+                    }
+                }
+                Definition::ValueAttach(_) => todo!(),
+                Definition::NameAttach(_) => todo!(),
+                Definition::VarAttach(_) => todo!(),
+            },
+            Def::Constructorlike(constructorlike) => match constructorlike {
+                Constructorlike::Constructor(constructor) => {
+                    constructors.push(constructor.clone());
+                }
+                Constructorlike::MacroDef(_) => todo!(),
+                Constructorlike::WithBlock(_) => todo!(),
+            },
+        }
+    }
+
+    SleighContext {
+        endian: endian.unwrap(),
+        align: align.unwrap(),
+        tokens,
+        contexts,
+        spaces,
+        default_space: default_space.unwrap(),
+        var_nodes,
+        p_code_ops,
+        constructors,
+    }
+}
+
+fn compute_token_symbol(ctx: &SleighContext, symbol: &str, input: &[u8]) -> u8 {
+    let BitRange { low, high } = ctx.tokens.get(symbol).unwrap();
+    let mask = ((1 << (high + 1)) - 1) - ((1 << low) - 1);
+    assert!(*high <= 7);
+    input.get(0).unwrap() & mask
+}
+
+fn compute_p_expression(ctx: &SleighContext, expr: &PExpression) -> u64 {
+    match expr {
+        PExpression::ConstantValue(v) => *v,
+        PExpression::Symbol(_) => todo!(),
+        _ => todo!(),
+    }
+}
+
+fn check_p_equation(ctx: &SleighContext, p_eq: PEquation, input: &[u8]) -> bool {
+    match p_eq {
+        PEquation::EllEq(ell_eq) => {
+            let EllEq {
+                ellipsis: ellipsis_left,
+                ell_rt:
+                    EllRt {
+                        atomic,
+                        ellipsis: ellipsis_right,
+                    },
+            } = *ell_eq;
+            match atomic {
+                Atomic::Constraint(constraint) => match constraint {
+                    Constraint::Compare(ConstraintCompare { op, symbol, expr }) => {
+                        let l = compute_token_symbol(ctx, &symbol, input);
+                        let r = compute_p_expression(ctx, expr);
+                        todo!()
+                    }
+                    Constraint::Symbol(_) => true,
+                },
+                Atomic::Parenthesized(p_eq) => check_p_equation(ctx, p_eq, input),
+            }
+        }
+        PEquation::And(l, r) => {
+            check_p_equation(ctx, *l, input) && check_p_equation(ctx, *r, input)
+        }
+        PEquation::Or(l, r) => check_p_equation(ctx, *l, input) || check_p_equation(ctx, *r, input),
+        PEquation::Cat(_, _) => todo!(),
+    }
+}
+
+fn disasm_insn(ctx: &SleighContext, bytes: &[u8]) -> String {
+    ctx.constructors
+        .iter()
+        .find(|c| c.id.is_none() && todo!())
+        .unwrap();
+    todo!()
 }
 
 fn main() {
