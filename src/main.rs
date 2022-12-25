@@ -340,68 +340,114 @@ enum JumpDest {
 }
 
 #[derive(Debug, Clone)]
+enum ExprBinOp {
+    IntAdd,
+    IntSub,
+    IntEqual,
+    IntNotEqual,
+    IntLess,
+    IntGreatEqual,
+    IntLessEqual,
+    IntGreat,
+    IntSLess,
+    IntSGreatEqual,
+    IntSLessEqual,
+    IntSGreat,
+    IntXor,
+    IntAnd,
+    IntOr,
+    IntLeft,
+    IntRight,
+    IntSRight,
+    IntMult,
+    IntDiv,
+    IntSDiv,
+    IntRem,
+    IntSRem,
+    BoolXor,
+    BoolAnd,
+    BoolOr,
+    FloatEqual,
+    FloatNotEqual,
+    FloatLess,
+    FloatGreat,
+    FloatLessEqual,
+    FloatGreatEqual,
+    FloatAdd,
+    FloatSub,
+    FloatMult,
+    FloatDiv,
+}
+
+#[derive(Debug, Clone)]
+struct ExprBin {
+    op: ExprBinOp,
+    l: Expr,
+    r: Expr,
+}
+
+#[derive(Debug, Clone)]
+enum ExprUnaryOp {
+    IntTwoComp,
+    IntNegate,
+    BoolNegate,
+    FloatNeg,
+}
+
+#[derive(Debug, Clone)]
+struct ExprUnary {
+    op: ExprUnaryOp,
+    operand: Expr,
+}
+
+#[derive(Debug, Clone)]
+enum ExprFunc1Name {
+    FloatAbs,
+    FloatSqrt,
+    IntSext,
+    IntZext,
+    FloatFloatToFloat,
+    FloatIntToFloat,
+    FloatNan,
+    FloatTrunc,
+    FloatCeil,
+    FloatFloor,
+    FloatRound,
+    New,
+    PopCount,
+}
+
+#[derive(Debug, Clone)]
+enum ExprFunc2Name {
+    IntCarry,
+    IntSCarry,
+    IntSBorrow,
+    New,
+}
+
+#[derive(Debug, Clone)]
+struct ExprFunc1 {
+    name: ExprFunc1Name,
+    arg: Expr,
+}
+
+#[derive(Debug, Clone)]
+struct ExprFunc2 {
+    name: ExprFunc2Name,
+    arg1: Expr,
+    arg2: Expr,
+}
+
+#[derive(Debug, Clone)]
 enum Expr {
     VarNode(VarNode),
     SizedStar(SizedStar, Box<Expr>),
-    IntAdd(Box<Expr>, Box<Expr>),
-    IntSub(Box<Expr>, Box<Expr>),
-    IntEqual(Box<Expr>, Box<Expr>),
-    IntNotEqual(Box<Expr>, Box<Expr>),
-    IntLess(Box<Expr>, Box<Expr>),
-    IntGreatEqual(Box<Expr>, Box<Expr>),
-    IntLessEqual(Box<Expr>, Box<Expr>),
-    IntGreat(Box<Expr>, Box<Expr>),
-    IntSLess(Box<Expr>, Box<Expr>),
-    IntSGreatEqual(Box<Expr>, Box<Expr>),
-    IntSLessEqual(Box<Expr>, Box<Expr>),
-    IntSGreat(Box<Expr>, Box<Expr>),
-    IntTwoComp(Box<Expr>),
-    IntNegate(Box<Expr>),
-    IntXor(Box<Expr>, Box<Expr>),
-    IntAnd(Box<Expr>, Box<Expr>),
-    IntOr(Box<Expr>, Box<Expr>),
-    IntLeft(Box<Expr>, Box<Expr>),
-    IntRight(Box<Expr>, Box<Expr>),
-    IntSRight(Box<Expr>, Box<Expr>),
-    IntMult(Box<Expr>, Box<Expr>),
-    IntDiv(Box<Expr>, Box<Expr>),
-    IntSDiv(Box<Expr>, Box<Expr>),
-    IntRem(Box<Expr>, Box<Expr>),
-    IntSRem(Box<Expr>, Box<Expr>),
-    BoolNegate(Box<Expr>),
-    BoolXor(Box<Expr>, Box<Expr>),
-    BoolAnd(Box<Expr>, Box<Expr>),
-    BoolOr(Box<Expr>, Box<Expr>),
-    FloatEqual(Box<Expr>, Box<Expr>),
-    FloatNotEqual(Box<Expr>, Box<Expr>),
-    FloatLess(Box<Expr>, Box<Expr>),
-    FloatGreat(Box<Expr>, Box<Expr>),
-    FloatLessEqual(Box<Expr>, Box<Expr>),
-    FloatGreatEqual(Box<Expr>, Box<Expr>),
-    FloatAdd(Box<Expr>, Box<Expr>),
-    FloatSub(Box<Expr>, Box<Expr>),
-    FloatMult(Box<Expr>, Box<Expr>),
-    FloatDiv(Box<Expr>, Box<Expr>),
-    FloatNeg(Box<Expr>),
-    FloatAbs(Box<Expr>),
-    FloatSqrt(Box<Expr>),
-    IntSext(Box<Expr>),
-    IntZext(Box<Expr>),
-    IntCarry(Box<Expr>, Box<Expr>),
-    IntSCarry(Box<Expr>, Box<Expr>),
-    IntSBorrow(Box<Expr>, Box<Expr>),
-    FloatFloatToFloat(Box<Expr>),
-    FloatIntToFloat(Box<Expr>),
-    FloatNan(Box<Expr>),
-    FloatTrunc(Box<Expr>),
-    FloatCeil(Box<Expr>),
-    FloatFloor(Box<Expr>),
-    FloatRound(Box<Expr>),
-    New1(Box<Expr>),
-    New2(Box<Expr>, Box<Expr>),
-    PopCount(Box<Expr>),
+    Bin(Box<ExprBin>),
+    Unary(Box<ExprUnary>),
     BitRange1(String, u8),
     BitRange2(String, u8, u8),
+    Func1(Box<ExprFunc1>),
+    Func2(Box<ExprFunc2>),
     UserOp { name: String, args: Vec<Expr> },
 }
 
@@ -547,8 +593,9 @@ fn preprocess_expression<'a>(
 ) -> IResult<&'a str, bool> {
     op_prec(
         &|input| preprocess_expression_atom(input, defs),
+        &|op: fn(bool, bool) -> bool, l, r| op(l, r),
         0,
-        &OpTable::new(&[&[("||", |l, r| *l || *r)], &[("&&", |l, r| *l && *r)]]),
+        &OpTable::new(&[&[("||", |l, r| l || r)], &[("&&", |l, r| l && r)]]),
         input,
     )
 }
@@ -970,23 +1017,26 @@ fn parse_p_expression_atom(input: &str) -> IResult<&str, PExpression> {
 }
 
 fn parse_p_expression(min_prec: usize, input: &str) -> IResult<&str, PExpression> {
-    let f = |op| |l, r| PExpression::Bin(Box::new(PExpressionBin { op, l, r }));
     op_prec(
         &parse_p_expression_atom,
+        &|op, l, r| PExpression::Bin(Box::new(PExpressionBin { op, l, r })),
         min_prec,
         &OpTable::new(&[
+            &[("$or", PExpressionBinOp::Or), ("|", PExpressionBinOp::Or)],
             &[
-                ("$or", f(PExpressionBinOp::Or)),
-                ("|", f(PExpressionBinOp::Or)),
+                ("$xor", PExpressionBinOp::Xor),
+                ("^", PExpressionBinOp::Xor),
             ],
-            &[("$xor", PExpression::Xor), ("^", PExpression::Xor)],
-            &[("$and", PExpression::And), ("&", PExpression::And)],
             &[
-                ("<<", PExpression::LeftShift),
-                (">>", PExpression::RightShift),
+                ("$and", PExpressionBinOp::And),
+                ("&", PExpressionBinOp::And),
             ],
-            &[("+", PExpression::Add), ("-", PExpression::Sub)],
-            &[("*", PExpression::Mult), ("/", PExpression::Div)],
+            &[
+                ("<<", PExpressionBinOp::LeftShift),
+                (">>", PExpressionBinOp::RightShift),
+            ],
+            &[("+", PExpressionBinOp::Add), ("-", PExpressionBinOp::Sub)],
+            &[("*", PExpressionBinOp::Mult), ("/", PExpressionBinOp::Div)],
         ]),
         input,
     )
@@ -1052,6 +1102,7 @@ fn parse_p_equation_ell_eq(input: &str) -> IResult<&str, PEquation> {
 fn parse_p_equation(input: &str) -> IResult<&str, PEquation> {
     op_prec(
         &parse_p_equation_ell_eq,
+        &|op: fn(Box<PEquation>, Box<PEquation>) -> PEquation, l, r| op(Box::new(l), Box::new(r)),
         0,
         &OpTable::new(&[
             &[("|", PEquation::Or)],
@@ -1323,107 +1374,124 @@ fn parse_label(input: &str) -> IResult<&str, Label> {
 fn parse_expr(input: &str) -> IResult<&str, Expr> {
     op_prec(
         &parse_expr_atom,
+        &|op, l, r| Expr::Bin(Box::new(ExprBin { op, l, r })),
         0,
         &OpTable::new(&[
-            &[("||", Expr::BoolOr)],
-            &[("&&", Expr::BoolAnd), ("^^", Expr::BoolXor)],
-            &[("|", Expr::IntOr)],
-            &[("^", Expr::IntXor)],
-            &[("&", Expr::IntAnd)],
+            &[("||", ExprBinOp::BoolOr)],
+            &[("&&", ExprBinOp::BoolAnd), ("^^", ExprBinOp::BoolXor)],
+            &[("|", ExprBinOp::IntOr)],
+            &[("^", ExprBinOp::IntXor)],
+            &[("&", ExprBinOp::IntAnd)],
             &[
-                ("==", Expr::IntEqual),
-                ("!=", Expr::IntNotEqual),
-                ("f==", Expr::FloatEqual),
-                ("f!=", Expr::FloatNotEqual),
+                ("==", ExprBinOp::IntEqual),
+                ("!=", ExprBinOp::IntNotEqual),
+                ("f==", ExprBinOp::FloatEqual),
+                ("f!=", ExprBinOp::FloatNotEqual),
             ],
             &[
-                ("<", Expr::IntLess),
-                (">", Expr::IntGreat),
-                (">=", Expr::IntGreatEqual),
-                ("<=", Expr::IntLessEqual),
-                ("s<", Expr::IntSLess),
-                ("s>=", Expr::IntSGreatEqual),
-                ("s<=", Expr::IntSLessEqual),
-                ("s>", Expr::IntSGreat),
-                ("f<", Expr::FloatLess),
-                ("f>", Expr::FloatGreat),
-                ("f<=", Expr::FloatLessEqual),
-                ("f>=", Expr::FloatGreatEqual),
+                ("<", ExprBinOp::IntLess),
+                (">", ExprBinOp::IntGreat),
+                (">=", ExprBinOp::IntGreatEqual),
+                ("<=", ExprBinOp::IntLessEqual),
+                ("s<", ExprBinOp::IntSLess),
+                ("s>=", ExprBinOp::IntSGreatEqual),
+                ("s<=", ExprBinOp::IntSLessEqual),
+                ("s>", ExprBinOp::IntSGreat),
+                ("f<", ExprBinOp::FloatLess),
+                ("f>", ExprBinOp::FloatGreat),
+                ("f<=", ExprBinOp::FloatLessEqual),
+                ("f>=", ExprBinOp::FloatGreatEqual),
             ],
             &[
-                ("<<", Expr::IntLeft),
-                (">>", Expr::IntRight),
-                ("s>>", Expr::IntSRight),
+                ("<<", ExprBinOp::IntLeft),
+                (">>", ExprBinOp::IntRight),
+                ("s>>", ExprBinOp::IntSRight),
             ],
             &[
-                ("+", Expr::IntAdd),
-                ("-", Expr::IntSub),
-                ("f+", Expr::FloatAdd),
-                ("f-", Expr::FloatSub),
+                ("+", ExprBinOp::IntAdd),
+                ("-", ExprBinOp::IntSub),
+                ("f+", ExprBinOp::FloatAdd),
+                ("f-", ExprBinOp::FloatSub),
             ],
             &[
-                ("*", Expr::IntMult),
-                ("/", Expr::IntDiv),
-                ("%", Expr::IntRem),
-                ("s/", Expr::IntSDiv),
-                ("s%", Expr::IntSRem),
-                ("f*", Expr::FloatMult),
-                ("f/", Expr::FloatDiv),
+                ("*", ExprBinOp::IntMult),
+                ("/", ExprBinOp::IntDiv),
+                ("%", ExprBinOp::IntRem),
+                ("s/", ExprBinOp::IntSDiv),
+                ("s%", ExprBinOp::IntSRem),
+                ("f*", ExprBinOp::FloatMult),
+                ("f/", ExprBinOp::FloatDiv),
             ],
         ]),
         input,
     )
 }
 
-fn parse_expr_func_helper_1<'a>(
-    func_name: &'static str,
-    constructor: impl Fn(Box<Expr>) -> Expr,
-    input: &'a str,
-) -> IResult<&'a str, Expr> {
+fn parse_expr_func_1_name(input: &str) -> IResult<&str, ExprFunc1Name> {
+    alt((
+        value(ExprFunc1Name::FloatAbs, tok("abs")),
+        value(ExprFunc1Name::FloatSqrt, tok("sqrt")),
+        value(ExprFunc1Name::IntSext, tok("sext")),
+        value(ExprFunc1Name::IntZext, tok("zext")),
+        value(ExprFunc1Name::FloatFloatToFloat, tok("float2float")),
+        value(ExprFunc1Name::FloatIntToFloat, tok("int")),
+        value(ExprFunc1Name::FloatNan, tok("nan")),
+        value(ExprFunc1Name::FloatTrunc, tok("trunc")),
+        value(ExprFunc1Name::FloatCeil, tok("ceil")),
+        value(ExprFunc1Name::FloatFloor, tok("floor")),
+        value(ExprFunc1Name::FloatRound, tok("round")),
+        value(ExprFunc1Name::New, tok("new")),
+        value(ExprFunc1Name::PopCount, tok("popcount")),
+    ))(input)
+}
+
+fn parse_expr_func_2_name(input: &str) -> IResult<&str, ExprFunc2Name> {
+    alt((
+        value(ExprFunc2Name::IntCarry, tok("carry")),
+        value(ExprFunc2Name::IntSCarry, tok("scarry")),
+        value(ExprFunc2Name::IntSBorrow, tok("sborrow")),
+        value(ExprFunc2Name::New, tok("new")),
+    ))(input)
+}
+
+fn parse_expr_func_1(input: &str) -> IResult<&str, ExprFunc1> {
     map(
-        preceded(tok(func_name), delimited(tok("("), parse_expr, tok(")"))),
-        |e| constructor(Box::new(e)),
+        pair(
+            parse_expr_func_1_name,
+            delimited(tok("("), parse_expr, tok(")")),
+        ),
+        |(name, arg)| ExprFunc1 { name, arg },
     )(input)
 }
 
-fn parse_expr_func_helper_2<'a>(
-    func_name: &'static str,
-    constructor: impl Fn(Box<Expr>, Box<Expr>) -> Expr,
-    input: &'a str,
-) -> IResult<&'a str, Expr> {
+fn parse_expr_func_2(input: &str) -> IResult<&str, ExprFunc2> {
     map(
-        preceded(
-            tok(func_name),
+        pair(
+            parse_expr_func_2_name,
             delimited(
                 tok("("),
                 separated_pair(parse_expr, tok(","), parse_expr),
                 tok(")"),
             ),
         ),
-        |(e1, e2)| constructor(Box::new(e1), Box::new(e2)),
+        |(name, (arg1, arg2))| ExprFunc2 { name, arg1, arg2 },
     )(input)
 }
 
-fn parse_expr_func(input: &str) -> IResult<&str, Expr> {
+fn parse_expr_unary_op(input: &str) -> IResult<&str, ExprUnaryOp> {
     alt((
-        |input| parse_expr_func_helper_1("abs", Expr::FloatAbs, input),
-        |input| parse_expr_func_helper_1("sqrt", Expr::FloatSqrt, input),
-        |input| parse_expr_func_helper_1("sext", Expr::IntSext, input),
-        |input| parse_expr_func_helper_1("zext", Expr::IntZext, input),
-        |input| parse_expr_func_helper_2("carry", Expr::IntCarry, input),
-        |input| parse_expr_func_helper_2("scarry", Expr::IntSCarry, input),
-        |input| parse_expr_func_helper_2("sborrow", Expr::IntSBorrow, input),
-        |input| parse_expr_func_helper_1("float2float", Expr::FloatFloatToFloat, input),
-        |input| parse_expr_func_helper_1("int2float", Expr::FloatIntToFloat, input),
-        |input| parse_expr_func_helper_1("nan", Expr::FloatNan, input),
-        |input| parse_expr_func_helper_1("trunc", Expr::FloatTrunc, input),
-        |input| parse_expr_func_helper_1("ceil", Expr::FloatCeil, input),
-        |input| parse_expr_func_helper_1("floor", Expr::FloatFloor, input),
-        |input| parse_expr_func_helper_1("round", Expr::FloatRound, input),
-        |input| parse_expr_func_helper_1("new", Expr::New1, input),
-        |input| parse_expr_func_helper_2("new", Expr::New2, input),
-        |input| parse_expr_func_helper_1("popcount", Expr::PopCount, input),
+        value(ExprUnaryOp::IntTwoComp, tok("-")),
+        value(ExprUnaryOp::IntNegate, tok("~")),
+        value(ExprUnaryOp::BoolNegate, tok("!")),
+        value(ExprUnaryOp::FloatNeg, tok("f-")),
     ))(input)
+}
+
+fn parse_expr_unary(input: &str) -> IResult<&str, ExprUnary> {
+    map(
+        pair(parse_expr_unary_op, parse_expr_atom),
+        |(op, operand)| ExprUnary { op, operand },
+    )(input)
 }
 
 fn parse_expr_atom(input: &str) -> IResult<&str, Expr> {
@@ -1432,19 +1500,9 @@ fn parse_expr_atom(input: &str) -> IResult<&str, Expr> {
         map(pair(parse_sized_star, parse_expr_atom), |(ss, e)| {
             Expr::SizedStar(ss, Box::new(e))
         }),
-        map(preceded(tok("-"), parse_expr_atom), |e| {
-            Expr::IntTwoComp(Box::new(e))
-        }),
-        map(preceded(tok("~"), parse_expr_atom), |e| {
-            Expr::IntNegate(Box::new(e))
-        }),
-        map(preceded(tok("!"), parse_expr_atom), |e| {
-            Expr::BoolNegate(Box::new(e))
-        }),
-        map(preceded(tok("f-"), parse_expr_atom), |e| {
-            Expr::FloatNeg(Box::new(e))
-        }),
-        parse_expr_func,
+        map(parse_expr_unary, |e| Expr::Unary(Box::new(e))),
+        map(parse_expr_func_1, |e| Expr::Func1(Box::new(e))),
+        map(parse_expr_func_2, |e| Expr::Func2(Box::new(e))),
         map(separated_pair(identifier, tok(":"), ws(u8)), |(s, i)| {
             Expr::BitRange1(s, i)
         }),
@@ -1637,16 +1695,22 @@ impl<O: Clone> OpTable<O> {
     }
 }
 
-fn op_prec<'a, F, E>(
+fn op_prec<'a, F, B, E, O>(
     e: &F,
+    bin_op_func: &B,
     min_prec: usize,
-    ops: &OpTable<E>,
+    ops: &OpTable<O>,
     orig_input: &'a str,
 ) -> IResult<&'a str, E>
 where
+    O: Clone,
     F: Fn(&'a str) -> IResult<&'a str, E, nom::error::Error<&'a str>>,
+    B: Fn(O, E, E) -> E,
 {
-    fn peek_op<'a, E>(input: &'a str, ops: &OpTable<E>) -> Option<&'static str> {
+    fn peek_op<'a, O>(input: &'a str, ops: &OpTable<O>) -> Option<&'static str>
+    where
+        O: Clone,
+    {
         let t = ops
             .op_tags
             .iter()
@@ -1656,15 +1720,18 @@ where
         ops.lookup(t)
     }
 
-    fn op_prec_1<'a, F, E>(
+    fn op_prec_1<'a, F, B, E, O>(
         mut lhs: E,
         min_prec: usize,
-        ops: &OpTable<E>,
+        ops: &OpTable<O>,
         e: &F,
+        bin_op_func: &B,
         input: &mut &'a str,
     ) -> IResult<&'a str, E>
     where
+        O: Clone,
         F: Fn(&'a str) -> IResult<&'a str, E, nom::error::Error<&'a str>>,
+        B: Fn(O, E, E) -> E,
     {
         let mut lookahead = peek_op(*input, ops);
 
@@ -1693,17 +1760,18 @@ where
                 if !op2_valid_prec {
                     break;
                 }
-                (*input, rhs) = op_prec_1(rhs, op_prec + 1, ops, e, input)?;
+                (*input, rhs) = op_prec_1(rhs, op_prec + 1, ops, e, bin_op_func, input)?;
                 lookahead = peek_op(*input, ops);
             }
-            lhs = ops.op_fns.get(op).unwrap()(Box::new(lhs), Box::new(rhs));
+            let op_val = ops.op_values.get(op).unwrap();
+            lhs = bin_op_func(op_val.clone(), lhs, rhs);
         }
 
         Ok((*input, lhs))
     }
 
     let (mut input, lhs) = e(orig_input)?;
-    op_prec_1(lhs, min_prec, ops, e, &mut input)
+    op_prec_1(lhs, min_prec, ops, e, bin_op_func, &mut input)
 }
 
 struct OffAndSize {
@@ -1839,7 +1907,7 @@ fn check_p_equation(ctx: &SleighContext, p_eq: PEquation, input: &[u8]) -> bool 
                 Atomic::Constraint(constraint) => match constraint {
                     Constraint::Compare(ConstraintCompare { op, symbol, expr }) => {
                         let l = compute_token_symbol(ctx, &symbol, input);
-                        let r = compute_p_expression(ctx, expr);
+                        let r = compute_p_expression(ctx, &expr);
                         todo!()
                     }
                     Constraint::Symbol(_) => true,
