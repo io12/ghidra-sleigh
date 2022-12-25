@@ -9,10 +9,10 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_till, take_until, take_while},
     character::complete::{
-        char, digit1, hex_digit1, i8, multispace1, one_of, satisfy, space0, space1, u8,
+        anychar, char, digit1, hex_digit1, i8, multispace1, one_of, satisfy, space0, space1, u8,
     },
     combinator::{fail, map, map_res, opt, peek, recognize, success, value},
-    multi::{many0, many1, separated_list0},
+    multi::{many0, many1, many_till, separated_list0},
     sequence::{delimited, pair, preceded, separated_pair, terminated, tuple},
     IResult,
 };
@@ -973,10 +973,9 @@ fn parse_constructor(input: &str) -> IResult<&str, Constructor> {
     map(
         tuple((
             terminated(opt(identifier), char(':')),
-            map(
-                terminated(ws(alt((take_until("\tis"), take_until(" is")))), tok("is")),
-                ToOwned::to_owned,
-            ),
+            map(ws(many_till(anychar, tok("is"))), |(s, _)| {
+                s.iter().collect()
+            }),
             parse_p_equation,
             parse_context_block,
             parse_rtl_body,
