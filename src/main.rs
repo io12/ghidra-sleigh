@@ -2206,7 +2206,6 @@ fn p_equation_symm_off(
 }
 
 fn disasm_insn(ctx: &SleighContext, off: u64, id: Option<&str>, input: &[u8], out: &mut String) {
-    dbg!(id);
     if let Some(constructor) = &ctx
         .constructors
         .iter()
