@@ -36,7 +36,7 @@ struct EndianDef {
     endian: Endian,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 enum Endian {
     Big,
     Little,
@@ -1875,9 +1875,24 @@ struct SleighContext {
     constructors: Vec<Constructor<OffAndSize>>,
 }
 
+impl SleighContext {
+    fn lookup_symbol_size(&self, symbol: &str) -> Option<u64> {
+        self.tokens
+            .get(symbol)
+            .map(|token_field| token_field.token_size.into())
+            .or_else(|| self.var_nodes.get(symbol).map(|off_size| off_size.size))
+            .or_else(|| {
+                self.constructors
+                    .iter()
+                    .find(|constructor| constructor.id.as_deref() == Some(symbol))
+                    .map(|constructor| constructor.p_equation.token.size)
+            })
+    }
+}
+
 fn type_pattern(
+    ctx: &mut SleighContext,
     PatternEquation { inner, token: () }: &PatternEquation<()>,
-    tokens: &HashMap<String, TokenField>,
     off: u64,
 ) -> PatternEquation<OffAndSize> {
     match inner {
@@ -1907,20 +1922,21 @@ fn type_pattern(
                         })),
                         token: OffAndSize {
                             off,
-                            size: tokens.get(symbol).unwrap().token_size.into(),
+                            size: { ctx.lookup_symbol_size(symbol).unwrap() },
                         },
                     },
                 },
-                Atomic::Parenthesized(p_eq) => type_pattern(&p_eq, tokens, off),
+                Atomic::Parenthesized(p_eq) => type_pattern(ctx, &p_eq, off),
             }
         }
         PatternEquationInner::Bin(bin) => {
             let PatternEquationBin { op, l, r } = &**bin;
             match op {
                 PatternEquationBinOp::And | PatternEquationBinOp::Or => {
-                    let l = type_pattern(l, tokens, off);
-                    let r = type_pattern(r, tokens, off);
+                    let l = type_pattern(ctx, l, off);
+                    let r = type_pattern(ctx, r, off);
                     assert_eq!(l.token.off, r.token.off);
+                    dbg!(&l, &r);
                     assert_eq!(l.token.size, r.token.size);
                     let token = l.token;
                     PatternEquation {
@@ -1933,9 +1949,10 @@ fn type_pattern(
                     }
                 }
                 PatternEquationBinOp::Cat => {
-                    let l = type_pattern(l, tokens, off);
-                    let r = type_pattern(r, tokens, l.token.off);
-                    assert_eq!(l.token.off + l.token.size, r.token.off);
+                    let l = type_pattern(ctx, l, off);
+                    let mid = l.token.off + l.token.size;
+                    let r = type_pattern(ctx, r, mid);
+                    assert_eq!(mid, r.token.off);
                     let off = l.token.off;
                     let size = l.token.size + r.token.size;
                     PatternEquation {
@@ -1953,19 +1970,27 @@ fn type_pattern(
 }
 
 fn make_context(sleigh: &Sleigh) -> SleighContext {
-    let mut endian = None;
-    let mut align = None;
-    let mut tokens = HashMap::new();
-    let mut contexts = HashMap::new();
-    let mut spaces = HashMap::new();
-    let mut default_space = None;
-    let mut var_nodes = HashMap::new();
-    let mut p_code_ops = HashSet::new();
-    let mut constructors_untyped = Vec::new();
+    let mut ret = SleighContext {
+        endian: Endian::Little,
+        align: 0,
+        tokens: HashMap::new(),
+        contexts: HashMap::new(),
+        spaces: HashMap::new(),
+        default_space: SpaceDef {
+            name: String::new(),
+            typ: SpaceType::Ram,
+            size: 0,
+            default: false,
+        },
+        var_nodes: HashMap::new(),
+        p_code_ops: HashSet::new(),
+        constructors: Vec::new(),
+    };
+
     for def in &sleigh.defs {
         match def {
-            Def::EndianDef(endian_def) => endian = Some(endian_def.endian.clone()),
-            Def::AlignDef(align_def) => align = Some(align_def.align),
+            Def::EndianDef(EndianDef { endian }) => ret.endian = *endian,
+            Def::AlignDef(AlignDef { align }) => ret.align = *align,
             Def::Definition(def) => match def {
                 Definition::TokenDef(TokenDef {
                     name: _,
@@ -1974,7 +1999,7 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
                     fields,
                 }) => {
                     for field in fields {
-                        tokens.insert(
+                        ret.tokens.insert(
                             field.name.clone(),
                             TokenField {
                                 token_size: *size,
@@ -1985,18 +2010,19 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
                     }
                 }
                 Definition::ContextDef(context_def) => {
-                    contexts.insert(context_def.var_sym.clone(), context_def.clone());
+                    ret.contexts
+                        .insert(context_def.var_sym.clone(), context_def.clone());
                 }
                 Definition::SpaceDef(space_def) => {
-                    spaces.insert(space_def.name.clone(), space_def.clone());
+                    ret.spaces.insert(space_def.name.clone(), space_def.clone());
                     if space_def.default {
-                        default_space = Some(space_def.clone())
+                        ret.default_space = space_def.clone()
                     }
                 }
                 Definition::VarNodeDef(var_node_def) => {
                     for (i, name) in var_node_def.names.iter().enumerate() {
                         if name != "_" {
-                            var_nodes.insert(
+                            ret.var_nodes.insert(
                                 name.clone(),
                                 OffAndSize {
                                     off: var_node_def.offset + i as u64 * var_node_def.size,
@@ -2009,7 +2035,7 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
                 Definition::BitRangeDef(_) => todo!(),
                 Definition::PCodeOpDef(p_code_op_def) => {
                     for op in &p_code_op_def.ops {
-                        p_code_ops.insert(op.clone());
+                        ret.p_code_ops.insert(op.clone());
                     }
                 }
                 Definition::ValueAttach(_) => todo!(),
@@ -2018,43 +2044,29 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
             },
             Def::Constructorlike(constructorlike) => match constructorlike {
                 Constructorlike::Constructor(constructor) => {
-                    constructors_untyped.push(constructor.clone());
+                    let Constructor {
+                        id,
+                        display,
+                        p_equation,
+                        context_block,
+                        rtl_body,
+                    } = constructor.clone();
+                    let constructor = Constructor {
+                        id,
+                        display,
+                        p_equation: type_pattern(&mut ret, &p_equation, 0),
+                        context_block,
+                        rtl_body,
+                    };
+                    ret.constructors.push(constructor);
                 }
                 Constructorlike::MacroDef(_) => {}
                 Constructorlike::WithBlock(_) => todo!(),
             },
         }
     }
-    let constructors = constructors_untyped
-        .into_iter()
-        .map(
-            |Constructor {
-                 id,
-                 display,
-                 p_equation,
-                 context_block,
-                 rtl_body,
-             }| Constructor {
-                id,
-                display,
-                p_equation: type_pattern(&p_equation, &tokens, 0),
-                context_block,
-                rtl_body,
-            },
-        )
-        .collect();
 
-    SleighContext {
-        endian: endian.unwrap(),
-        align: align.unwrap(),
-        tokens,
-        contexts,
-        spaces,
-        default_space: default_space.unwrap(),
-        var_nodes,
-        p_code_ops,
-        constructors,
-    }
+    ret
 }
 
 fn compute_token_symbol(ctx: &SleighContext, symbol: &str, input: &[u8]) -> u8 {
