@@ -159,7 +159,7 @@ struct VarAttach {
 
 #[derive(Debug, Clone)]
 enum Constructorlike {
-    Constructor(Constructor),
+    Constructor(Constructor<()>),
     MacroDef(MacroDef),
     WithBlock(WithBlock),
 }
@@ -179,10 +179,10 @@ struct DisplaySection {
 }
 
 #[derive(Debug, Clone)]
-struct Constructor {
+struct Constructor<T> {
     id: Option<String>,
     display: DisplaySection,
-    p_equation: PatternEquation,
+    p_equation: PatternEquation<T>,
     context_block: ContextBlock,
     rtl_body: RtlBody,
 }
@@ -195,34 +195,40 @@ enum PatternEquationBinOp {
 }
 
 #[derive(Debug, Clone)]
-struct PatternEquationBin {
+struct PatternEquationBin<T> {
     op: PatternEquationBinOp,
-    l: PatternEquation,
-    r: PatternEquation,
+    l: PatternEquation<T>,
+    r: PatternEquation<T>,
 }
 
 #[derive(Debug, Clone)]
-enum PatternEquation {
-    EllEq(Box<EllEq>),
-    Bin(Box<PatternEquationBin>),
+enum PatternEquationInner<T> {
+    EllEq(Box<EllEq<T>>),
+    Bin(Box<PatternEquationBin<T>>),
 }
 
 #[derive(Debug, Clone)]
-struct EllEq {
-    ellipsis: bool,
-    ell_rt: EllRt,
+struct PatternEquation<T> {
+    inner: PatternEquationInner<T>,
+    token: T,
 }
 
 #[derive(Debug, Clone)]
-struct EllRt {
-    atomic: Atomic,
-    ellipsis: bool,
+struct EllEq<T> {
+    ellipsis_left: bool,
+    ell_rt: EllRt<T>,
 }
 
 #[derive(Debug, Clone)]
-enum Atomic {
+struct EllRt<T> {
+    atomic: Atomic<T>,
+    ellipsis_right: bool,
+}
+
+#[derive(Debug, Clone)]
+enum Atomic<T> {
     Constraint(Constraint),
-    Parenthesized(PatternEquation),
+    Parenthesized(PatternEquation<T>),
 }
 
 #[derive(Debug, Clone)]
@@ -540,7 +546,7 @@ struct WithBlockMid {
 #[derive(Debug, Clone)]
 struct WithBlockStart {
     id: Option<String>,
-    bitpat: Option<PatternEquation>,
+    bitpat: Option<PatternEquation<()>>,
     block: ContextBlock,
 }
 
@@ -1029,12 +1035,12 @@ fn parse_display_section(input: &str) -> IResult<&str, DisplaySection> {
     )(input)
 }
 
-fn parse_constructor(input: &str) -> IResult<&str, Constructor> {
+fn parse_constructor(input: &str) -> IResult<&str, Constructor<()>> {
     map(
         tuple((
             terminated(opt(identifier), char(':')),
             parse_display_section,
-            parse_p_equation,
+            parse_pattern_equation,
             parse_context_block,
             parse_rtl_body,
         )),
@@ -1126,40 +1132,54 @@ fn parse_constraint(input: &str) -> IResult<&str, Constraint> {
     ))(input)
 }
 
-fn parse_atomic(input: &str) -> IResult<&str, Atomic> {
+fn parse_atomic(input: &str) -> IResult<&str, Atomic<()>> {
     alt((
         map(parse_constraint, Atomic::Constraint),
         map(
-            delimited(tok("("), parse_p_equation, tok(")")),
+            delimited(tok("("), parse_pattern_equation, tok(")")),
             Atomic::Parenthesized,
         ),
     ))(input)
 }
 
-fn parse_ell_rt(input: &str) -> IResult<&str, EllRt> {
-    map(pair(parse_atomic, parse_ellipsis), |(atomic, ellipsis)| {
-        EllRt { atomic, ellipsis }
-    })(input)
+fn parse_ell_rt(input: &str) -> IResult<&str, EllRt<()>> {
+    map(
+        pair(parse_atomic, parse_ellipsis),
+        |(atomic, ellipsis_right)| EllRt {
+            atomic,
+            ellipsis_right,
+        },
+    )(input)
 }
 
-fn parse_ell_eq(input: &str) -> IResult<&str, EllEq> {
-    map(pair(parse_ellipsis, parse_ell_rt), |(ellipsis, ell_rt)| {
-        EllEq { ellipsis, ell_rt }
-    })(input)
+fn parse_ell_eq(input: &str) -> IResult<&str, EllEq<()>> {
+    map(
+        pair(parse_ellipsis, parse_ell_rt),
+        |(ellipsis_left, ell_rt)| EllEq {
+            ellipsis_left,
+            ell_rt,
+        },
+    )(input)
 }
 
 fn parse_ellipsis(input: &str) -> IResult<&str, bool> {
     map(opt(tok("...")), |o| o.is_some())(input)
 }
 
-fn parse_p_equation_ell_eq(input: &str) -> IResult<&str, PatternEquation> {
-    map(parse_ell_eq, |e| PatternEquation::EllEq(Box::new(e)))(input)
+fn parse_pattern_equation_ell_eq(input: &str) -> IResult<&str, PatternEquation<()>> {
+    map(parse_ell_eq, |e| PatternEquation {
+        inner: PatternEquationInner::EllEq(Box::new(e)),
+        token: (),
+    })(input)
 }
 
-fn parse_p_equation(input: &str) -> IResult<&str, PatternEquation> {
+fn parse_pattern_equation(input: &str) -> IResult<&str, PatternEquation<()>> {
     op_prec(
-        &parse_p_equation_ell_eq,
-        &|op, l, r| PatternEquation::Bin(Box::new(PatternEquationBin { op, l, r })),
+        &parse_pattern_equation_ell_eq,
+        &|op, l, r| PatternEquation {
+            inner: PatternEquationInner::Bin(Box::new(PatternEquationBin { op, l, r })),
+            token: (),
+        },
         0,
         &OpTable::new(&[
             &[("|", PatternEquationBinOp::Or)],
@@ -1631,7 +1651,7 @@ fn parse_with_block_start(input: &str) -> IResult<&str, WithBlockStart> {
             tok("with"),
             tuple((
                 terminated(opt(identifier), tok(":")),
-                opt(parse_p_equation),
+                opt(parse_pattern_equation),
                 parse_context_block,
             )),
             tok("{"),
@@ -1831,6 +1851,7 @@ where
     op_prec_1(lhs, min_prec, ops, e, bin_op_func, &mut input)
 }
 
+#[derive(Debug, Copy, Clone)]
 struct OffAndSize {
     off: u64,
     size: u64,
@@ -1851,7 +1872,84 @@ struct SleighContext {
     default_space: SpaceDef,
     var_nodes: HashMap<String, OffAndSize>,
     p_code_ops: HashSet<String>,
-    constructors: Vec<Constructor>,
+    constructors: Vec<Constructor<OffAndSize>>,
+}
+
+fn type_pattern(
+    PatternEquation { inner, token: () }: &PatternEquation<()>,
+    tokens: &HashMap<String, TokenField>,
+    off: u64,
+) -> PatternEquation<OffAndSize> {
+    match inner {
+        PatternEquationInner::EllEq(ell_eq) => {
+            let EllEq {
+                ellipsis_left,
+                ell_rt:
+                    EllRt {
+                        atomic,
+                        ellipsis_right,
+                    },
+            } = *ell_eq.clone();
+            match atomic {
+                Atomic::Constraint(constraint) => match constraint {
+                    Constraint::Compare(ConstraintCompare {
+                        op: _,
+                        ref symbol,
+                        expr: _,
+                    })
+                    | Constraint::Symbol(ref symbol) => PatternEquation {
+                        inner: PatternEquationInner::EllEq(Box::new(EllEq {
+                            ellipsis_left,
+                            ell_rt: EllRt {
+                                atomic: Atomic::Constraint(constraint.clone()),
+                                ellipsis_right,
+                            },
+                        })),
+                        token: OffAndSize {
+                            off,
+                            size: tokens.get(symbol).unwrap().token_size.into(),
+                        },
+                    },
+                },
+                Atomic::Parenthesized(p_eq) => type_pattern(&p_eq, tokens, off),
+            }
+        }
+        PatternEquationInner::Bin(bin) => {
+            let PatternEquationBin { op, l, r } = &**bin;
+            match op {
+                PatternEquationBinOp::And | PatternEquationBinOp::Or => {
+                    let l = type_pattern(l, tokens, off);
+                    let r = type_pattern(r, tokens, off);
+                    assert_eq!(l.token.off, r.token.off);
+                    assert_eq!(l.token.size, r.token.size);
+                    let token = l.token;
+                    PatternEquation {
+                        inner: PatternEquationInner::Bin(Box::new(PatternEquationBin {
+                            op: op.clone(),
+                            l,
+                            r,
+                        })),
+                        token,
+                    }
+                }
+                PatternEquationBinOp::Cat => {
+                    let l = type_pattern(l, tokens, off);
+                    let r = type_pattern(r, tokens, l.token.off);
+                    assert_eq!(l.token.off + l.token.size, r.token.off);
+                    let off = l.token.off;
+                    let size = l.token.size + r.token.size;
+                    PatternEquation {
+                        inner: PatternEquationInner::Bin(Box::new(PatternEquationBin {
+                            op: op.clone(),
+                            l,
+                            r,
+                        })),
+                        token: OffAndSize { off, size },
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn make_context(sleigh: &Sleigh) -> SleighContext {
@@ -1863,7 +1961,7 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
     let mut default_space = None;
     let mut var_nodes = HashMap::new();
     let mut p_code_ops = HashSet::new();
-    let mut constructors = Vec::new();
+    let mut constructors_untyped = Vec::new();
     for def in &sleigh.defs {
         match def {
             Def::EndianDef(endian_def) => endian = Some(endian_def.endian.clone()),
@@ -1920,13 +2018,31 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
             },
             Def::Constructorlike(constructorlike) => match constructorlike {
                 Constructorlike::Constructor(constructor) => {
-                    constructors.push(constructor.clone());
+                    constructors_untyped.push(constructor.clone());
                 }
                 Constructorlike::MacroDef(_) => {}
                 Constructorlike::WithBlock(_) => todo!(),
             },
         }
     }
+    let constructors = constructors_untyped
+        .into_iter()
+        .map(
+            |Constructor {
+                 id,
+                 display,
+                 p_equation,
+                 context_block,
+                 rtl_body,
+             }| Constructor {
+                id,
+                display,
+                p_equation: type_pattern(&p_equation, &tokens, 0),
+                context_block,
+                rtl_body,
+            },
+        )
+        .collect();
 
     SleighContext {
         endian: endian.unwrap(),
@@ -1985,15 +2101,20 @@ fn compute_p_expression(ctx: &SleighContext, expr: &PExpression) -> u64 {
     }
 }
 
-fn check_p_equation(ctx: &SleighContext, p_eq: &PatternEquation, input: &[u8]) -> bool {
-    match p_eq {
-        PatternEquation::EllEq(ell_eq) => {
+fn check_p_equation(
+    ctx: &SleighContext,
+    PatternEquation { inner, token }: &PatternEquation<OffAndSize>,
+    input: &[u8],
+) -> bool {
+    let input = input.get(token.off as usize..).unwrap();
+    match inner {
+        PatternEquationInner::EllEq(ell_eq) => {
             let EllEq {
-                ellipsis: _,
+                ellipsis_left: _,
                 ell_rt:
                     EllRt {
                         atomic,
-                        ellipsis: _,
+                        ellipsis_right: _,
                     },
             } = &**ell_eq;
             match atomic {
@@ -2016,7 +2137,7 @@ fn check_p_equation(ctx: &SleighContext, p_eq: &PatternEquation, input: &[u8]) -
                 Atomic::Parenthesized(p_eq) => check_p_equation(ctx, &p_eq, input),
             }
         }
-        PatternEquation::Bin(bin) => {
+        PatternEquationInner::Bin(bin) => {
             let PatternEquationBin { op, l, r } = &**bin;
             let l = check_p_equation(ctx, &l, input);
             let r = check_p_equation(ctx, &r, input);
@@ -2060,26 +2181,27 @@ fn check_p_equation(ctx: &SleighContext, p_eq: &PatternEquation, input: &[u8]) -
 // }
 
 fn disasm_insn(ctx: &SleighContext, table_id: Option<&str>, input: &[u8], out: &mut String) {
-    dbg!(table_id, compute_token_symbol(ctx, "bbb", input));
-    let constructor = &ctx
-        .constructors
-        .iter()
-        .find(|c| c.id.as_deref() == table_id && check_p_equation(ctx, &c.p_equation, input))
-        .unwrap();
-    for tok in &constructor.display.toks {
-        match tok {
-            DisplayToken::Caret => {}
-            DisplayToken::String(s) => out.push_str(s),
-            DisplayToken::Char(c) => out.push(*c),
-            DisplayToken::Space => out.push(' '),
-            DisplayToken::Symbol(s) => {
-                todo!()
-                // if p_equation_symm_off(&constructor.p_equation, s) {
-                //     disasm_insn(ctx, Some(s), input, out)
-                // }
-            }
-        }
-    }
+    todo!()
+    // dbg!(table_id, compute_token_symbol(ctx, "bbb", input));
+    // let constructor = &ctx
+    //     .constructors
+    //     .iter()
+    //     .find(|c| c.id.as_deref() == table_id && check_p_equation(ctx, &c.p_equation, input))
+    //     .unwrap();
+    // for tok in &constructor.display.toks {
+    //     match tok {
+    //         DisplayToken::Caret => {}
+    //         DisplayToken::String(s) => out.push_str(s),
+    //         DisplayToken::Char(c) => out.push(*c),
+    //         DisplayToken::Space => out.push(' '),
+    //         DisplayToken::Symbol(s) => {
+    //             todo!()
+    //             // if p_equation_symm_off(&constructor.p_equation, s) {
+    //             //     disasm_insn(ctx, Some(s), input, out)
+    //             // }
+    //         }
+    //     }
+    // }
 }
 
 fn main() {
