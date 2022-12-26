@@ -1936,9 +1936,10 @@ fn type_pattern(
                     let l = type_pattern(ctx, l, off);
                     let r = type_pattern(ctx, r, off);
                     assert_eq!(l.token.off, r.token.off);
-                    dbg!(&l, &r);
-                    assert_eq!(l.token.size, r.token.size);
-                    let token = l.token;
+                    let token = OffAndSize {
+                        off: l.token.off,
+                        size: u64::max(l.token.size, r.token.size),
+                    };
                     PatternEquation {
                         inner: PatternEquationInner::Bin(Box::new(PatternEquationBin {
                             op: op.clone(),
@@ -2161,59 +2162,65 @@ fn check_p_equation(
     }
 }
 
-// fn p_equation_symm_off(p_eq: &PEquation, target_symbol: &str) -> (OffAndSize, bool) {
-//     match p_eq {
-//         PEquation::EllEq(ell_eq) => {
-//             let EllEq {
-//                 ellipsis: _,
-//                 ell_rt:
-//                     EllRt {
-//                         atomic,
-//                         ellipsis: _,
-//                     },
-//             } = &**ell_eq;
-//             match atomic {
-//                 Atomic::Constraint(constraint) => match constraint {
-//                     Constraint::Symbol(symbol) if symbol == target_symbol => Some(0),
-//                     _ => None,
-//                 },
-//                 Atomic::Parenthesized(p_eq) => p_equation_symm_off(p_eq, target_symbol),
-//             }
-//         }
-//         PEquation::And(l, r) | PEquation::Or(l, r) => {
-//             let l = p_equation_symm_off(l, target_symbol);
-//             let r = p_equation_symm_off(r, target_symbol);
-//             l.or(r)
-//         }
-//         PEquation::Cat(l, r) => {
-//             let l = p_equation_symm_off(l, target_symbol);
-//             let r = p_equation_symm_off(r, target_symbol);
-//         }
-//     }
-// }
+fn p_equation_symm_off(
+    PatternEquation { inner, token }: &PatternEquation<OffAndSize>,
+    target_symbol: &str,
+) -> Option<OffAndSize> {
+    match inner {
+        PatternEquationInner::EllEq(ell_eq) => {
+            let EllEq {
+                ellipsis_left: _,
+                ell_rt:
+                    EllRt {
+                        atomic,
+                        ellipsis_right: _,
+                    },
+            } = &**ell_eq;
+            match atomic {
+                Atomic::Constraint(constraint) => match constraint {
+                    Constraint::Compare(ConstraintCompare {
+                        op: _,
+                        symbol,
+                        expr: _,
+                    })
+                    | Constraint::Symbol(symbol) => {
+                        if symbol == target_symbol {
+                            Some(*token)
+                        } else {
+                            None
+                        }
+                    }
+                },
+                Atomic::Parenthesized(p_eq) => p_equation_symm_off(p_eq, target_symbol),
+            }
+        }
+        PatternEquationInner::Bin(bin) => {
+            let PatternEquationBin { op: _, l, r } = &**bin;
+            p_equation_symm_off(l, target_symbol).or_else(|| p_equation_symm_off(r, target_symbol))
+        }
+    }
+}
 
 fn disasm_insn(ctx: &SleighContext, table_id: Option<&str>, input: &[u8], out: &mut String) {
-    todo!()
-    // dbg!(table_id, compute_token_symbol(ctx, "bbb", input));
-    // let constructor = &ctx
-    //     .constructors
-    //     .iter()
-    //     .find(|c| c.id.as_deref() == table_id && check_p_equation(ctx, &c.p_equation, input))
-    //     .unwrap();
-    // for tok in &constructor.display.toks {
-    //     match tok {
-    //         DisplayToken::Caret => {}
-    //         DisplayToken::String(s) => out.push_str(s),
-    //         DisplayToken::Char(c) => out.push(*c),
-    //         DisplayToken::Space => out.push(' '),
-    //         DisplayToken::Symbol(s) => {
-    //             todo!()
-    //             // if p_equation_symm_off(&constructor.p_equation, s) {
-    //             //     disasm_insn(ctx, Some(s), input, out)
-    //             // }
-    //         }
-    //     }
-    // }
+    dbg!(table_id);
+    let constructor = &ctx
+        .constructors
+        .iter()
+        .find(|c| c.id.as_deref() == table_id && check_p_equation(ctx, &c.p_equation, input))
+        .unwrap();
+    for tok in &constructor.display.toks {
+        match tok {
+            DisplayToken::Caret => {}
+            DisplayToken::String(s) => out.push_str(s),
+            DisplayToken::Char(c) => out.push(*c),
+            DisplayToken::Space => out.push(' '),
+            DisplayToken::Symbol(s) => {
+                if let Some(off) = p_equation_symm_off(&constructor.p_equation, s) {
+                    disasm_insn(ctx, Some(s), input, out)
+                }
+            }
+        }
+    }
 }
 
 fn main() {
