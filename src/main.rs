@@ -2070,17 +2070,21 @@ fn make_context(sleigh: &Sleigh) -> SleighContext {
     ret
 }
 
+fn compute_bit_range(b: u8, low: u8, high: u8) -> u8 {
+    let low = low as u64;
+    let high = high as u64;
+    let mask = (((1 << (high + 1)) - 1) - ((1 << low) - 1)) as u8;
+    assert!(low <= high && high <= 7);
+    (b & mask) >> low
+}
+
 fn compute_token_symbol(ctx: &SleighContext, symbol: &str, input: &[u8]) -> u8 {
     let TokenField {
         token_size: _,
         low,
         high,
     } = ctx.tokens.get(symbol).unwrap();
-    let low = *low as u64;
-    let high = *high as u64;
-    let mask = (((1 << (high + 1)) - 1) - ((1 << low) - 1)) as u8;
-    assert!(high <= 7);
-    (input.get(0).unwrap() & mask) >> low
+    compute_bit_range(*input.get(0).unwrap(), *low, *high)
 }
 
 fn compute_p_expression(ctx: &SleighContext, expr: &PExpression) -> u64 {
@@ -2201,25 +2205,40 @@ fn p_equation_symm_off(
     }
 }
 
-fn disasm_insn(ctx: &SleighContext, table_id: Option<&str>, input: &[u8], out: &mut String) {
-    dbg!(table_id);
-    let constructor = &ctx
+fn disasm_insn(ctx: &SleighContext, off: u64, id: Option<&str>, input: &[u8], out: &mut String) {
+    dbg!(id);
+    if let Some(constructor) = &ctx
         .constructors
         .iter()
-        .find(|c| c.id.as_deref() == table_id && check_p_equation(ctx, &c.p_equation, input))
-        .unwrap();
-    for tok in &constructor.display.toks {
-        match tok {
-            DisplayToken::Caret => {}
-            DisplayToken::String(s) => out.push_str(s),
-            DisplayToken::Char(c) => out.push(*c),
-            DisplayToken::Space => out.push(' '),
-            DisplayToken::Symbol(s) => {
-                if let Some(off) = p_equation_symm_off(&constructor.p_equation, s) {
-                    disasm_insn(ctx, Some(s), input, out)
+        .find(|c| c.id.as_deref() == id && check_p_equation(ctx, &c.p_equation, input))
+    {
+        for tok in &constructor.display.toks {
+            match tok {
+                DisplayToken::Caret => {}
+                DisplayToken::String(s) => out.push_str(s),
+                DisplayToken::Char(c) => out.push(*c),
+                DisplayToken::Space => out.push(' '),
+                DisplayToken::Symbol(s) => {
+                    if let Some(OffAndSize { off, size: _ }) =
+                        p_equation_symm_off(&constructor.p_equation, s)
+                    {
+                        disasm_insn(ctx, off, Some(s), input, out)
+                    } else {
+                        out.push_str(s)
+                    }
                 }
             }
         }
+    } else if let Some(TokenField {
+        token_size: _,
+        low,
+        high,
+    }) = ctx.tokens.get(id.unwrap())
+    {
+        let b = compute_bit_range(*input.get(off as usize).unwrap(), *low, *high);
+        out.push_str(&format!("{b:#x}"))
+    } else {
+        out.push_str(id.unwrap());
     }
 }
 
@@ -2229,6 +2248,6 @@ fn main() {
     assert!(remaining.is_empty());
     let ctx = make_context(&sleigh);
     let mut dis = String::new();
-    disasm_insn(&ctx, None, &[0x96], &mut dis);
+    disasm_insn(&ctx, 0, None, &[0x96, 0x11, 0x22], &mut dis);
     println!("{dis}");
 }
