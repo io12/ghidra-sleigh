@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::ast::*;
 
@@ -23,7 +23,7 @@ pub struct SleighContext {
     default_space: SpaceDef,
     var_nodes: HashMap<String, OffAndSize>,
     p_code_ops: HashSet<String>,
-    constructors: Vec<Constructor<OffAndSize>>,
+    constructors: BTreeMap<Option<String>, Vec<Constructor<OffAndSize>>>,
 }
 
 impl SleighContext {
@@ -34,9 +34,9 @@ impl SleighContext {
             .or_else(|| self.var_nodes.get(symbol).map(|off_size| off_size.size))
             .or_else(|| {
                 self.constructors
-                    .iter()
-                    .find(|constructor| constructor.id.as_deref() == Some(symbol))
-                    .map(|constructor| constructor.p_equation.token.size)
+                    .get(&Some(symbol.to_owned()))
+                    .and_then(|cs| cs.get(0))
+                    .map(|c| c.p_equation.token.size)
             })
     }
 
@@ -55,7 +55,7 @@ impl SleighContext {
             },
             var_nodes: HashMap::new(),
             p_code_ops: HashSet::new(),
-            constructors: Vec::new(),
+            constructors: BTreeMap::new(),
         };
 
         for def in &sleigh.defs {
@@ -123,13 +123,13 @@ impl SleighContext {
                             rtl_body,
                         } = constructor.clone();
                         let constructor = Constructor {
-                            id,
+                            id: id.clone(),
                             display,
                             p_equation: ret.type_pattern(&p_equation, 0),
                             context_block,
                             rtl_body,
                         };
-                        ret.constructors.push(constructor);
+                        ret.constructors.entry(id).or_default().push(constructor);
                     }
                     Constructorlike::MacroDef(_) => {}
                     Constructorlike::WithBlock(_) => todo!(),
@@ -308,12 +308,11 @@ impl SleighContext {
         }
     }
 
-    pub fn disasm_insn(&self, off: u64, id: Option<&str>, input: &[u8], out: &mut String) {
-        if let Some(constructor) = self
-            .constructors
-            .iter()
-            .find(|c| c.id.as_deref() == id && self.check_p_equation(&c.p_equation, input))
-        {
+    pub fn disasm_insn(&self, off: u64, id: Option<String>, input: &[u8], out: &mut String) {
+        if let Some(constructor) = self.constructors.get(&id).and_then(|cs| {
+            cs.iter()
+                .find(|c| self.check_p_equation(&c.p_equation, input))
+        }) {
             for tok in &constructor.display.toks {
                 match tok {
                     DisplayToken::Caret => {}
@@ -324,7 +323,7 @@ impl SleighContext {
                         if let Some(OffAndSize { off, size: _ }) =
                             p_equation_symm_off(&constructor.p_equation, s)
                         {
-                            self.disasm_insn(off, Some(s), input, out)
+                            self.disasm_insn(off, Some(s.to_owned()), input, out)
                         } else {
                             out.push_str(s)
                         }
@@ -335,12 +334,12 @@ impl SleighContext {
             token_size: _,
             low,
             high,
-        }) = self.tokens.get(id.unwrap())
+        }) = self.tokens.get(id.as_ref().unwrap())
         {
             let b = compute_bit_range(*input.get(off as usize).unwrap(), *low, *high);
             out.push_str(&format!("{b:#x}"))
         } else {
-            out.push_str(id.unwrap());
+            out.push_str(id.as_ref().unwrap());
         }
     }
 }
