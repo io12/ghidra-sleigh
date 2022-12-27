@@ -7,7 +7,5 @@ fn main() {
     let (remaining, sleigh) = parse::parse_sleigh(&pp).unwrap();
     assert!(remaining.is_empty());
     let ctx = context::SleighContext::new(&sleigh);
-    let mut dis = String::new();
-    ctx.disasm_insn(0, None, &[0x96, 0x11, 0x22], &mut dis);
-    println!("{dis}");
+    println!("{}", ctx.define_enums());
 }

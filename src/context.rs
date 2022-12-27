@@ -342,6 +342,60 @@ impl SleighContext {
             out.push_str(id.as_ref().unwrap());
         }
     }
+
+    pub fn define_enums(&self) -> proc_macro2::TokenStream {
+        use proc_macro2::{Ident, TokenStream};
+        use quote::{format_ident, quote};
+
+        self.constructors
+            .iter()
+            .map(|(id, cs)| {
+                let name = format_ident!("{}", id.as_deref().unwrap_or("Instruction"));
+                let variants = cs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let variant_name = if let (None, Some(DisplayToken::Symbol(s))) =
+                            (id, c.display.toks.get(0))
+                        {
+                            format_ident!("{s}")
+                        } else {
+                            format_ident!("V{i}")
+                        };
+                        // Get non-mnemonic display section tokens.
+                        // See the "Mnemonic" section of the sleigh manual.
+                        let non_mnem_toks = match id {
+                            Some(_) => c.display.toks.as_slice(),
+                            None => c.display.toks.get(1..).unwrap_or_default(),
+                        };
+                        let variant_values = non_mnem_toks
+                            .iter()
+                            .filter_map(|tok| match tok {
+                                DisplayToken::Symbol(s) => Some(s),
+                                _ => None,
+                            })
+                            .filter_map(|s| {
+                                if self.constructors.contains_key(&Some(s.to_owned())) {
+                                    Some(format_ident!("{s}"))
+                                } else if let Some(token_field) = self.tokens.get(s) {
+                                    Some(format_ident!("u{}", token_field.token_size * 8))
+                                } else {
+                                    None
+                                }
+                            });
+                        let variant_values = quote![#(#variant_values),*];
+                        let variant_values = if variant_values.is_empty() {
+                            variant_values
+                        } else {
+                            quote![(#variant_values)]
+                        };
+                        quote![#variant_name #variant_values ,]
+                    })
+                    .collect::<TokenStream>();
+                quote!(enum #name { #variants })
+            })
+            .collect::<TokenStream>()
+    }
 }
 
 fn compute_bit_range(b: u8, low: u8, high: u8) -> u8 {
