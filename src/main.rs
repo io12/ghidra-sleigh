@@ -1,7 +1,6 @@
 mod ast;
 mod context;
 mod parse;
-mod preprocess;
 
 fn main() {
     let pp = parse::preprocess(std::io::stdin().lock());
