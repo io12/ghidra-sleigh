@@ -477,23 +477,24 @@ fn parse_display_token(input: &str) -> IResult<&str, DisplayToken> {
 }
 
 fn parse_display_section(input: &str) -> IResult<&str, DisplaySection> {
-    map(
-        ws(many_till(parse_display_token, tok("is"))),
-        |(toks, _)| DisplaySection { toks },
-    )(input)
+    map(many_till(parse_display_token, tok("is")), |(toks, _)| {
+        DisplaySection { toks }
+    })(input)
 }
 
 fn parse_constructor(input: &str) -> IResult<&str, Constructor<()>> {
     map(
         tuple((
-            terminated(opt(identifier), char(':')),
+            map(terminated(opt(identifier), char(':')), |name| {
+                name.unwrap_or_else(|| "instruction".to_owned())
+            }),
             parse_display_section,
             parse_pattern_equation,
             parse_context_block,
             parse_rtl_body,
         )),
-        |(id, display, p_equation, context_block, rtl_body)| Constructor {
-            header: id,
+        |(header, display, p_equation, context_block, rtl_body)| Constructor {
+            header,
             display,
             p_equation,
             context_block,

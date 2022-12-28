@@ -130,7 +130,7 @@ impl SleighContext {
                         ret.symbols.insert(name.to_owned(), SymbolData::Token);
                         for field in fields {
                             ret.symbols.insert(
-                                field.name,
+                                field.name.to_owned(),
                                 SymbolData::Value(TokenField {
                                     token_size: *size,
                                     low: field.low,
@@ -142,7 +142,7 @@ impl SleighContext {
                     Definition::ContextDef(ContextDef { var_sym, fields }) => {
                         for field in fields {
                             ret.symbols
-                                .insert(field.name, SymbolData::Context(field.clone()));
+                                .insert(field.name.to_owned(), SymbolData::Context(field.clone()));
                         }
                     }
                     Definition::SpaceDef(space_def) => {
@@ -383,37 +383,43 @@ impl SleighContext {
     }
 
     pub fn disasm_insn(&self, off: u64, table_header: &str, input: &[u8], out: &mut String) {
-        if let Some(constructor) = self.constructors.get(&table_header).and_then(|cs| {
-            cs.iter()
-                .find(|c| self.check_p_equation(&c.p_equation, input))
-        }) {
-            for tok in &constructor.display.toks {
-                match tok {
-                    DisplayToken::Caret => {}
-                    DisplayToken::String(s) => out.push_str(&s),
-                    DisplayToken::Char(c) => out.push(c),
-                    DisplayToken::Space => out.push(' '),
-                    DisplayToken::Symbol(s) => {
-                        if let Some(OffAndSize { off, size: _ }) =
-                            p_equation_symm_off(&constructor.p_equation, &s)
-                        {
-                            self.disasm_insn(off, &s, input, out)
-                        } else {
-                            out.push_str(&s)
+        match self.symbols.get(table_header) {
+            Some(SymbolData::Subtable(constructors)) => {
+                if let Some(constructor) = constructors
+                    .iter()
+                    .find(|constructor| self.check_p_equation(&constructor.p_equation, input))
+                {
+                    for tok in &constructor.display.toks {
+                        match tok {
+                            DisplayToken::Caret => {}
+                            DisplayToken::String(s) => out.push_str(&s),
+                            DisplayToken::Char(c) => out.push(*c),
+                            DisplayToken::Space => out.push(' '),
+                            DisplayToken::Symbol(s) => {
+                                if let Some(OffAndSize { off, size: _ }) =
+                                    p_equation_symm_off(&constructor.p_equation, &s)
+                                {
+                                    self.disasm_insn(off, &s, input, out)
+                                } else {
+                                    out.push_str(&s)
+                                }
+                            }
                         }
                     }
+                } else {
+                    todo!()
                 }
             }
-        } else if let Some(TokenField {
-            token_size: _,
-            low,
-            high,
-        }) = self.tokens.get(table_header.as_ref().unwrap())
-        {
-            let b = compute_bit_range(*input.get(off as usize).unwrap(), low, high);
-            out.push_str(&format!("{b:#x}"))
-        } else {
-            out.push_str(table_header.as_ref().unwrap());
+            Some(SymbolData::Value(TokenField {
+                token_size: _,
+                low,
+                high,
+            })) => {
+                let b = compute_bit_range(*input.get(off as usize).unwrap(), *low, *high);
+                out.push_str(&format!("{b:#x}"))
+            }
+            Some(_) => todo!(),
+            None => out.push_str(table_header),
         }
     }
 
@@ -421,41 +427,40 @@ impl SleighContext {
         use proc_macro2::TokenStream;
         use quote::{format_ident, quote};
 
-        self.constructors
+        self.symbols
             .iter()
-            .map(|(id, cs)| {
-                let name = format_ident!("{}", id.as_deref().unwrap_or("Instruction"));
+            .filter_map(|(symbol, data)| match data {
+                SymbolData::Subtable(cs) => Some((symbol, cs)),
+                _ => None,
+            })
+            .map(|(name, cs)| {
+                let name = format_ident!("{name}");
                 let variants = cs
                     .iter()
                     .enumerate()
                     .map(|(i, c)| {
-                        let variant_name = if let (None, Some(DisplayToken::Symbol(s))) =
-                            (id, c.display.toks.get(0))
-                        {
-                            format_ident!("{s}")
-                        } else {
-                            format_ident!("V{i}")
-                        };
+                        let variant_name =
+                            if let Some(DisplayToken::Symbol(s)) = c.display.toks.get(0) {
+                                format_ident!("{s}")
+                            } else {
+                                format_ident!("V{i}")
+                            };
                         // Get non-mnemonic display section tokens.
                         // See the "Mnemonic" section of the sleigh manual.
-                        let non_mnem_toks = match id {
-                            Some(_) => c.display.toks.as_slice(),
-                            None => c.display.toks.get(1..).unwrap_or_default(),
-                        };
+                        let non_mnem_toks = c.display.toks.get(1..).unwrap_or_default();
                         let variant_values = non_mnem_toks
                             .iter()
                             .filter_map(|tok| match tok {
                                 DisplayToken::Symbol(s) => Some(s),
                                 _ => None,
                             })
-                            .filter_map(|s| {
-                                if self.constructors.contains_key(&Some(s.to_owned())) {
-                                    Some(format_ident!("{s}"))
-                                } else if let Some(token_field) = self.tokens.get(s) {
-                                    Some(format_ident!("u{}", token_field.token_size * 8))
-                                } else {
-                                    None
+                            .filter_map(|s| match self.symbols.get(s) {
+                                Some(SymbolData::Subtable(_)) => Some(format_ident!("{s}")),
+                                Some(SymbolData::Value(token_field)) => {
+                                    let bits = token_field.token_size * 8;
+                                    Some(format_ident!("u{bits}"))
                                 }
+                                _ => None,
                             });
                         let variant_values = quote![#(#variant_values),*];
                         let variant_values = if variant_values.is_empty() {
