@@ -423,11 +423,42 @@ impl SleighContext {
         }
     }
 
-    pub fn define_enums(&self) -> proc_macro2::TokenStream {
-        use proc_macro2::TokenStream;
+    pub fn define_rust_types(&self) -> proc_macro2::TokenStream {
+        use proc_macro2::{Ident, TokenStream};
         use quote::{format_ident, quote};
 
-        self.symbols
+        fn display_to_ident(ds: &DisplaySection) -> Ident {
+            let s = ds
+                .toks
+                .iter()
+                .map(|tok| match tok {
+                    DisplayToken::Caret => "_CARET_",
+                    DisplayToken::String(_) => "_STRING_",
+                    DisplayToken::Char(_) => "_CHAR_",
+                    DisplayToken::Space => "_",
+                    DisplayToken::Symbol(s) => s,
+                })
+                .collect::<String>();
+            format_ident!("{s}")
+        }
+
+        let newtypes = self
+            .symbols
+            .iter()
+            .filter_map(|(symbol, data)| match data {
+                SymbolData::Value(token_field) => Some((symbol, token_field)),
+                _ => None,
+            })
+            .map(|(name, token_field)| {
+                let name = format_ident!("{name}");
+                let bits = token_field.token_size * 8;
+                let inner_int_type = format_ident!("u{bits}");
+                quote!(struct #name(#inner_int_type);)
+            })
+            .collect::<TokenStream>();
+
+        let enums = self
+            .symbols
             .iter()
             .filter_map(|(symbol, data)| match data {
                 SymbolData::Subtable(cs) => Some((symbol, cs)),
@@ -443,7 +474,7 @@ impl SleighContext {
                             if let Some(DisplayToken::Symbol(s)) = c.display.toks.get(0) {
                                 format_ident!("{s}")
                             } else {
-                                format_ident!("V{i}")
+                                display_to_ident(&c.display)
                             };
                         // Get non-mnemonic display section tokens.
                         // See the "Mnemonic" section of the sleigh manual.
@@ -455,10 +486,8 @@ impl SleighContext {
                                 _ => None,
                             })
                             .filter_map(|s| match self.symbols.get(s) {
-                                Some(SymbolData::Subtable(_)) => Some(format_ident!("{s}")),
-                                Some(SymbolData::Value(token_field)) => {
-                                    let bits = token_field.token_size * 8;
-                                    Some(format_ident!("u{bits}"))
+                                Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => {
+                                    Some(format_ident!("{s}"))
                                 }
                                 _ => None,
                             });
@@ -471,9 +500,14 @@ impl SleighContext {
                         quote![#variant_name #variant_values ,]
                     })
                     .collect::<TokenStream>();
-                quote!(enum #name { #variants })
+                quote![enum #name { #variants }]
             })
-            .collect::<TokenStream>()
+            .collect::<TokenStream>();
+
+        quote![
+            #newtypes
+            #enums
+        ]
     }
 }
 

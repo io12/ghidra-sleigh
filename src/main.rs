@@ -7,5 +7,5 @@ fn main() {
     let (remaining, sleigh) = parse::parse_sleigh(&pp).unwrap();
     assert!(remaining.is_empty());
     let ctx = context::SleighContext::new(&sleigh);
-    println!("{}", ctx.define_enums());
+    println!("{}", ctx.define_rust_types());
 }
