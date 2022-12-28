@@ -427,9 +427,8 @@ impl SleighContext {
         use proc_macro2::{Ident, TokenStream};
         use quote::{format_ident, quote};
 
-        fn display_to_ident(ds: &DisplaySection) -> Ident {
-            let s = ds
-                .toks
+        fn display_to_ident(toks: &[DisplayToken]) -> Ident {
+            let s = toks
                 .iter()
                 .map(|tok| match tok {
                     DisplayToken::Caret => "_CARET_",
@@ -442,11 +441,8 @@ impl SleighContext {
             format_ident!("{s}")
         }
 
-        fn display_to_tuple_values<'a>(
-            ctx: &'a SleighContext,
-            ds: &'a DisplaySection,
-        ) -> impl Iterator<Item = Ident> + 'a {
-            ds.toks
+        fn display_toks_to_tuple_values(ctx: &SleighContext, toks: &[DisplayToken]) -> TokenStream {
+            let values = toks
                 .iter()
                 .filter_map(|tok| match tok {
                     DisplayToken::Symbol(s) => Some(s),
@@ -457,8 +453,62 @@ impl SleighContext {
                         Some(format_ident!("{s}"))
                     }
                     _ => None,
-                })
+                });
+            let values = quote![#(#values),*];
+            if values.is_empty() {
+                values
+            } else {
+                quote![(#values)]
+            }
         }
+
+        let (mnemonic_enums, mnemonic_instruction_variants) = self
+            .symbols
+            .iter()
+            .find_map(|(symbol, data)| match (symbol.as_str(), data) {
+                ("instruction", SymbolData::Subtable(cs)) => Some(cs),
+                _ => None,
+            })
+            .unwrap()
+            .iter()
+            .map(|c| match c.display.toks.as_slice() {
+                [DisplayToken::Symbol(mnemonic), toks @ ..] => (mnemonic, toks),
+                _ => panic!("instruction has no mnemonic"),
+            })
+            .fold(
+                HashMap::<&str, Vec<&[DisplayToken]>>::new(),
+                |mut acc, (mnemonic, toks)| {
+                    acc.entry(mnemonic).or_default().push(toks);
+                    acc
+                },
+            )
+            .iter()
+            .map(|(mnemonic, variants)| {
+                let mnemonic = format_ident!("{mnemonic}");
+                match variants.as_slice() {
+                    [] => unreachable!(),
+                    [v] => {
+                        let variant_values = display_toks_to_tuple_values(self, v);
+                        (quote![], quote![#mnemonic #variant_values ,])
+                    }
+                    vs => {
+                        let variants = vs
+                            .iter()
+                            .map(|v| {
+                                let variant_name = display_to_ident(v);
+                                let variant_values = display_toks_to_tuple_values(self, v);
+                                quote![#variant_name #variant_values ,]
+                            })
+                            .collect::<TokenStream>();
+
+                        (
+                            quote![enum #mnemonic { #variants }],
+                            quote![#mnemonic ( #mnemonic ) ,],
+                        )
+                    }
+                }
+            })
+            .unzip::<TokenStream, TokenStream, TokenStream, TokenStream>();
 
         let token_types = self
             .symbols
@@ -487,29 +537,28 @@ impl SleighContext {
                 match cs.as_slice() {
                     [] => unreachable!(),
                     [c] => {
-                        let values = display_to_tuple_values(self, &c.display);
-                        quote![struct #name ( #(#values),* ) ;]
+                        let values = display_toks_to_tuple_values(self, &c.display.toks);
+                        quote![struct #name #values ;]
                     }
                     cs => {
-                        let variants = cs
-                            .iter()
-                            .map(|c| {
-                                let variant_name =
-                                    if let Some(DisplayToken::Symbol(s)) = c.display.toks.get(0) {
+                        let variants = if name == "instruction" {
+                            mnemonic_instruction_variants.clone()
+                        } else {
+                            cs.iter()
+                                .map(|c| {
+                                    let variant_name = if let Some(DisplayToken::Symbol(s)) =
+                                        c.display.toks.get(0)
+                                    {
                                         format_ident!("{s}")
                                     } else {
-                                        display_to_ident(&c.display)
+                                        display_to_ident(&c.display.toks)
                                     };
-                                let variant_values = display_to_tuple_values(self, &c.display);
-                                let variant_values = quote![#(#variant_values),*];
-                                let variant_values = if variant_values.is_empty() {
-                                    variant_values
-                                } else {
-                                    quote![(#variant_values)]
-                                };
-                                quote![#variant_name #variant_values ,]
-                            })
-                            .collect::<TokenStream>();
+                                    let variant_values =
+                                        display_toks_to_tuple_values(self, &c.display.toks);
+                                    quote![#variant_name #variant_values ,]
+                                })
+                                .collect::<TokenStream>()
+                        };
                         quote![enum #name { #variants }]
                     }
                 }
@@ -518,6 +567,7 @@ impl SleighContext {
 
         quote![
             #token_types
+            #mnemonic_enums
             #constructor_types
         ]
     }
