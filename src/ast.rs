@@ -549,3 +549,24 @@ pub enum PreProcessDirective<'a> {
     Else,
     Unknown { line: &'a str },
 }
+
+impl std::fmt::Display for DisplayToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DisplayToken::Caret => write!(f, "^"),
+            DisplayToken::String(s) => write!(f, "\"{s}\""),
+            DisplayToken::Char(c) => write!(f, "{c}"),
+            DisplayToken::Space => write!(f, " "),
+            DisplayToken::Symbol(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl std::fmt::Display for DisplaySection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for tok in &self.toks {
+            write!(f, "{tok}")?;
+        }
+        Ok(())
+    }
+}
