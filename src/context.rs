@@ -442,7 +442,25 @@ impl SleighContext {
             format_ident!("{s}")
         }
 
-        let newtypes = self
+        fn display_to_tuple_values<'a>(
+            ctx: &'a SleighContext,
+            ds: &'a DisplaySection,
+        ) -> impl Iterator<Item = Ident> + 'a {
+            ds.toks
+                .iter()
+                .filter_map(|tok| match tok {
+                    DisplayToken::Symbol(s) => Some(s),
+                    _ => None,
+                })
+                .filter_map(|s| match ctx.symbols.get(s) {
+                    Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => {
+                        Some(format_ident!("{s}"))
+                    }
+                    _ => None,
+                })
+        }
+
+        let token_types = self
             .symbols
             .iter()
             .filter_map(|(symbol, data)| match data {
@@ -457,7 +475,7 @@ impl SleighContext {
             })
             .collect::<TokenStream>();
 
-        let enums = self
+        let constructor_types = self
             .symbols
             .iter()
             .filter_map(|(symbol, data)| match data {
@@ -466,47 +484,41 @@ impl SleighContext {
             })
             .map(|(name, cs)| {
                 let name = format_ident!("{name}");
-                let variants = cs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| {
-                        let variant_name =
-                            if let Some(DisplayToken::Symbol(s)) = c.display.toks.get(0) {
-                                format_ident!("{s}")
-                            } else {
-                                display_to_ident(&c.display)
-                            };
-                        // Get non-mnemonic display section tokens.
-                        // See the "Mnemonic" section of the sleigh manual.
-                        let non_mnem_toks = c.display.toks.get(1..).unwrap_or_default();
-                        let variant_values = non_mnem_toks
+                match cs.as_slice() {
+                    [] => unreachable!(),
+                    [c] => {
+                        let values = display_to_tuple_values(self, &c.display);
+                        quote![struct #name ( #(#values),* ) ;]
+                    }
+                    cs => {
+                        let variants = cs
                             .iter()
-                            .filter_map(|tok| match tok {
-                                DisplayToken::Symbol(s) => Some(s),
-                                _ => None,
+                            .map(|c| {
+                                let variant_name =
+                                    if let Some(DisplayToken::Symbol(s)) = c.display.toks.get(0) {
+                                        format_ident!("{s}")
+                                    } else {
+                                        display_to_ident(&c.display)
+                                    };
+                                let variant_values = display_to_tuple_values(self, &c.display);
+                                let variant_values = quote![#(#variant_values),*];
+                                let variant_values = if variant_values.is_empty() {
+                                    variant_values
+                                } else {
+                                    quote![(#variant_values)]
+                                };
+                                quote![#variant_name #variant_values ,]
                             })
-                            .filter_map(|s| match self.symbols.get(s) {
-                                Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => {
-                                    Some(format_ident!("{s}"))
-                                }
-                                _ => None,
-                            });
-                        let variant_values = quote![#(#variant_values),*];
-                        let variant_values = if variant_values.is_empty() {
-                            variant_values
-                        } else {
-                            quote![(#variant_values)]
-                        };
-                        quote![#variant_name #variant_values ,]
-                    })
-                    .collect::<TokenStream>();
-                quote![enum #name { #variants }]
+                            .collect::<TokenStream>();
+                        quote![enum #name { #variants }]
+                    }
+                }
             })
             .collect::<TokenStream>();
 
         quote![
-            #newtypes
-            #enums
+            #token_types
+            #constructor_types
         ]
     }
 }
