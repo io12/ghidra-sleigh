@@ -160,7 +160,7 @@ pub struct DisplaySection {
 
 #[derive(Debug, Clone)]
 pub struct Constructor<T> {
-    pub id: Option<String>,
+    pub header: String,
     pub display: DisplaySection,
     pub p_equation: PatternEquation<T>,
     pub context_block: ContextBlock,

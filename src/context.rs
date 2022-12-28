@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::*;
 
@@ -14,48 +14,106 @@ struct TokenField {
     high: u8,
 }
 
+enum SymbolData {
+    // Space name
+    //
+    // `define space NAME`
+    Space(SpaceDef),
+
+    /// Main (non-field) token name
+    ///
+    /// `define token NAME`
+    Token,
+
+    /// Custom pcode op name
+    ///
+    /// `define pcodeop NAME;`
+    UserOp,
+
+    /// Macro name
+    ///
+    /// `macro NAME`
+    Macro,
+
+    /// Table header name
+    ///
+    /// `NAME:`
+    // The default if none (the root constructor) seems to be "instruction"
+    Subtable(Vec<Constructor<OffAndSize>>),
+
+    /// Token field
+    ///
+    /// `NAME = (0,7)`
+    Value(TokenField),
+
+    /// Attached value
+    ///
+    /// `attach values [ NAME ]`
+    ValueMap,
+
+    /// Context field name
+    ///
+    /// `define context contextreg NAME=`
+    Context(ContextFieldDef),
+
+    /// Attached name
+    ///
+    /// `attach names [ NAME ]`
+    Name,
+
+    /// Var node definition
+    ///
+    /// `define space_name offset=0 size=1 [ NAME ];`
+    VarNode(OffAndSize),
+
+    /// Attached variable
+    ///
+    /// `attach variables [ NAME ]`
+    VarList,
+
+    /// Predefined `inst_start` symbol
+    Start,
+
+    /// Predefined `inst_next` symbol
+    End,
+
+    /// Predefined `inst_next2` symbol
+    Next2,
+
+    /// Defined bit range
+    ///
+    /// `define bitrange NAME=`
+    Bit,
+}
+
 pub struct SleighContext {
     endian: Endian,
     align: u8,
-    tokens: HashMap<String, TokenField>,
-    contexts: HashMap<String, ContextDef>,
-    spaces: HashMap<String, SpaceDef>,
+    symbols: HashMap<String, SymbolData>,
     default_space: SpaceDef,
-    var_nodes: HashMap<String, OffAndSize>,
-    p_code_ops: HashSet<String>,
-    constructors: BTreeMap<Option<String>, Vec<Constructor<OffAndSize>>>,
 }
 
 impl SleighContext {
     fn lookup_symbol_size(&self, symbol: &str) -> Option<u64> {
-        self.tokens
-            .get(symbol)
-            .map(|token_field| token_field.token_size.into())
-            .or_else(|| self.var_nodes.get(symbol).map(|off_size| off_size.size))
-            .or_else(|| {
-                self.constructors
-                    .get(&Some(symbol.to_owned()))
-                    .and_then(|cs| cs.get(0))
-                    .map(|c| c.p_equation.token.size)
-            })
+        match self.symbols.get(symbol)? {
+            SymbolData::Subtable(c) => Some(c.get(0)?.p_equation.token.size),
+            SymbolData::Value(token_field) => Some(token_field.token_size.into()),
+            SymbolData::VarNode(off_size) => Some(off_size.size),
+            _ => None,
+        }
     }
 
     pub fn new(sleigh: &Sleigh) -> SleighContext {
         let mut ret = SleighContext {
             endian: Endian::Little,
             align: 0,
-            tokens: HashMap::new(),
-            contexts: HashMap::new(),
-            spaces: HashMap::new(),
+            symbols: HashMap::new(),
             default_space: SpaceDef {
                 name: String::new(),
                 typ: SpaceType::Ram,
                 size: 0,
                 default: false,
             },
-            var_nodes: HashMap::new(),
-            p_code_ops: HashSet::new(),
-            constructors: BTreeMap::new(),
         };
 
         for def in &sleigh.defs {
@@ -64,28 +122,32 @@ impl SleighContext {
                 Def::AlignDef(AlignDef { align }) => ret.align = *align,
                 Def::Definition(def) => match def {
                     Definition::TokenDef(TokenDef {
-                        name: _,
+                        name,
                         size,
                         endian: _,
                         fields,
                     }) => {
+                        ret.symbols.insert(name.to_owned(), SymbolData::Token);
                         for field in fields {
-                            ret.tokens.insert(
-                                field.name.clone(),
-                                TokenField {
+                            ret.symbols.insert(
+                                field.name,
+                                SymbolData::Value(TokenField {
                                     token_size: *size,
                                     low: field.low,
                                     high: field.high,
-                                },
+                                }),
                             );
                         }
                     }
-                    Definition::ContextDef(context_def) => {
-                        ret.contexts
-                            .insert(context_def.var_sym.clone(), context_def.clone());
+                    Definition::ContextDef(ContextDef { var_sym, fields }) => {
+                        for field in fields {
+                            ret.symbols
+                                .insert(field.name, SymbolData::Context(field.clone()));
+                        }
                     }
                     Definition::SpaceDef(space_def) => {
-                        ret.spaces.insert(space_def.name.clone(), space_def.clone());
+                        ret.symbols
+                            .insert(space_def.name.clone(), SymbolData::Space(space_def.clone()));
                         if space_def.default {
                             ret.default_space = space_def.clone()
                         }
@@ -93,12 +155,12 @@ impl SleighContext {
                     Definition::VarNodeDef(var_node_def) => {
                         for (i, name) in var_node_def.names.iter().enumerate() {
                             if name != "_" {
-                                ret.var_nodes.insert(
+                                ret.symbols.insert(
                                     name.clone(),
-                                    OffAndSize {
+                                    SymbolData::VarNode(OffAndSize {
                                         off: var_node_def.offset + i as u64 * var_node_def.size,
                                         size: var_node_def.size,
-                                    },
+                                    }),
                                 );
                             }
                         }
@@ -106,7 +168,7 @@ impl SleighContext {
                     Definition::BitRangeDef(_) => todo!(),
                     Definition::PCodeOpDef(p_code_op_def) => {
                         for op in &p_code_op_def.ops {
-                            ret.p_code_ops.insert(op.clone());
+                            ret.symbols.insert(op.clone(), SymbolData::UserOp);
                         }
                     }
                     Definition::ValueAttach(_) => todo!(),
@@ -116,20 +178,28 @@ impl SleighContext {
                 Def::Constructorlike(constructorlike) => match constructorlike {
                     Constructorlike::Constructor(constructor) => {
                         let Constructor {
-                            id,
+                            header: id,
                             display,
                             p_equation,
                             context_block,
                             rtl_body,
                         } = constructor.clone();
                         let constructor = Constructor {
-                            id: id.clone(),
+                            header: id.clone(),
                             display,
                             p_equation: ret.type_pattern(&p_equation, 0),
                             context_block,
                             rtl_body,
                         };
-                        ret.constructors.entry(id).or_default().push(constructor);
+                        let sym_data = ret
+                            .symbols
+                            .entry(id)
+                            .or_insert(SymbolData::Subtable(Vec::new()));
+                        let sym_data = match sym_data {
+                            SymbolData::Subtable(constructors) => constructors,
+                            _ => panic!("constructor name conflict"),
+                        };
+                        sym_data.push(constructor);
                     }
                     Constructorlike::MacroDef(_) => {}
                     Constructorlike::WithBlock(_) => todo!(),
@@ -221,12 +291,16 @@ impl SleighContext {
     }
 
     fn compute_token_symbol(&self, symbol: &str, input: &[u8]) -> u8 {
-        let TokenField {
+        if let Some(SymbolData::Value(TokenField {
             token_size: _,
             low,
             high,
-        } = self.tokens.get(symbol).unwrap();
-        compute_bit_range(*input.get(0).unwrap(), *low, *high)
+        })) = self.symbols.get(symbol)
+        {
+            compute_bit_range(*input.get(0).unwrap(), *low, *high)
+        } else {
+            panic!("token field {symbol} not found")
+        }
     }
 
     fn compute_p_expression(&self, expr: &PExpression) -> u64 {
@@ -308,24 +382,24 @@ impl SleighContext {
         }
     }
 
-    pub fn disasm_insn(&self, off: u64, id: Option<String>, input: &[u8], out: &mut String) {
-        if let Some(constructor) = self.constructors.get(&id).and_then(|cs| {
+    pub fn disasm_insn(&self, off: u64, table_header: &str, input: &[u8], out: &mut String) {
+        if let Some(constructor) = self.constructors.get(&table_header).and_then(|cs| {
             cs.iter()
                 .find(|c| self.check_p_equation(&c.p_equation, input))
         }) {
             for tok in &constructor.display.toks {
                 match tok {
                     DisplayToken::Caret => {}
-                    DisplayToken::String(s) => out.push_str(s),
-                    DisplayToken::Char(c) => out.push(*c),
+                    DisplayToken::String(s) => out.push_str(&s),
+                    DisplayToken::Char(c) => out.push(c),
                     DisplayToken::Space => out.push(' '),
                     DisplayToken::Symbol(s) => {
                         if let Some(OffAndSize { off, size: _ }) =
-                            p_equation_symm_off(&constructor.p_equation, s)
+                            p_equation_symm_off(&constructor.p_equation, &s)
                         {
-                            self.disasm_insn(off, Some(s.to_owned()), input, out)
+                            self.disasm_insn(off, &s, input, out)
                         } else {
-                            out.push_str(s)
+                            out.push_str(&s)
                         }
                     }
                 }
@@ -334,17 +408,17 @@ impl SleighContext {
             token_size: _,
             low,
             high,
-        }) = self.tokens.get(id.as_ref().unwrap())
+        }) = self.tokens.get(table_header.as_ref().unwrap())
         {
-            let b = compute_bit_range(*input.get(off as usize).unwrap(), *low, *high);
+            let b = compute_bit_range(*input.get(off as usize).unwrap(), low, high);
             out.push_str(&format!("{b:#x}"))
         } else {
-            out.push_str(id.as_ref().unwrap());
+            out.push_str(table_header.as_ref().unwrap());
         }
     }
 
     pub fn define_enums(&self) -> proc_macro2::TokenStream {
-        use proc_macro2::{Ident, TokenStream};
+        use proc_macro2::TokenStream;
         use quote::{format_ident, quote};
 
         self.constructors

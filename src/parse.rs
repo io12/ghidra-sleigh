@@ -493,7 +493,7 @@ fn parse_constructor(input: &str) -> IResult<&str, Constructor<()>> {
             parse_rtl_body,
         )),
         |(id, display, p_equation, context_block, rtl_body)| Constructor {
-            id,
+            header: id,
             display,
             p_equation,
             context_block,
