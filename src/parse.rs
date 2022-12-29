@@ -486,7 +486,7 @@ fn parse_constructor(input: &str) -> IResult<&str, Constructor<()>> {
     map(
         tuple((
             map(terminated(opt(identifier), char(':')), |name| {
-                name.unwrap_or_else(|| "instruction".to_owned())
+                name.unwrap_or_else(|| INSTRUCTION.to_owned())
             }),
             parse_display_section,
             parse_pattern_equation,

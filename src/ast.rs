@@ -1,3 +1,5 @@
+pub const INSTRUCTION: &str = "instruction";
+
 #[derive(Debug, Clone)]
 pub struct Sleigh {
     pub defs: Vec<Def>,
