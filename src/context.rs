@@ -494,9 +494,13 @@ impl SleighContext {
                     .iter()
                     .map(|constructor| {
                         let toks = &constructor.display.toks;
+                        let doc = constructor.display.to_string();
                         let variant_name = display_to_ident(toks);
                         let variant_values = display_to_tuple_values(self, toks);
-                        quote![#variant_name #variant_values ,]
+                        quote![
+                            #[doc = #doc]
+                            #variant_name #variant_values ,
+                        ]
                     })
                     .collect::<TokenStream>();
                 quote![enum #name { #variants }]
@@ -507,12 +511,19 @@ impl SleighContext {
             .iter()
             .map(|(mnemonic, constructors)| {
                 let mnemonic = format_ident!("{mnemonic}");
-                let variant_values = match constructors.as_slice() {
+                match constructors.as_slice() {
                     [] => unimplemented!(),
-                    [constructor] => display_to_tuple_values(self, &constructor.display.toks),
-                    _ => quote![( #mnemonic )],
-                };
-                quote![#mnemonic #variant_values ,]
+                    [constructor] => {
+                        let doc = constructor.display.to_string();
+                        let variant_values =
+                            display_to_tuple_values(self, &constructor.display.toks);
+                        quote![
+                            #[doc = #doc]
+                            #mnemonic #variant_values ,
+                        ]
+                    }
+                    _ => quote![#mnemonic ( #mnemonic ) ,],
+                }
             })
             .collect::<TokenStream>();
 
@@ -546,16 +557,24 @@ impl SleighContext {
                 match cs.as_slice() {
                     [] => unreachable!(),
                     [c] => {
+                        let doc = c.display.to_string();
                         let values = display_to_tuple_values(self, &c.display.toks);
-                        quote![struct #name #values ;]
+                        quote![
+                            #[doc = #doc]
+                            struct #name #values ;
+                        ]
                     }
                     _ => {
                         let variants = cs
                             .iter()
                             .map(|c| {
+                                let doc = c.display.to_string();
                                 let variant_name = display_to_ident(&c.display.toks);
                                 let variant_values = display_to_tuple_values(self, &c.display.toks);
-                                quote![#variant_name #variant_values ,]
+                                quote![
+                                    #[doc = #doc]
+                                    #variant_name #variant_values ,
+                                ]
                             })
                             .collect::<TokenStream>();
                         quote![enum #name { #variants }]
