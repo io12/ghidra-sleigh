@@ -3,18 +3,19 @@ use std::collections::HashMap;
 use crate::ast::*;
 
 #[derive(Debug, Copy, Clone)]
-struct OffAndSize {
+pub struct OffAndSize {
     off: u64,
     size: u64,
 }
 
-struct TokenField {
-    token_size: u8,
+#[derive(Debug, Copy, Clone)]
+pub struct TokenField {
+    pub token_size: u8,
     low: u8,
     high: u8,
 }
 
-enum SymbolData {
+pub enum SymbolData {
     // Space name
     //
     // `define space NAME`
@@ -89,7 +90,7 @@ enum SymbolData {
 pub struct SleighContext {
     endian: Endian,
     align: u8,
-    symbols: HashMap<String, SymbolData>,
+    pub symbols: HashMap<String, SymbolData>,
     default_space: SpaceDef,
 }
 
@@ -424,200 +425,10 @@ impl SleighContext {
     }
 
     pub fn define_rust_types(&self) -> proc_macro2::TokenStream {
-        use heck::ToUpperCamelCase;
-        use proc_macro2::TokenStream;
-        use quote::{format_ident, quote};
-
-        fn char_name(c: char) -> Option<&'static str> {
-            match c {
-                '#' => Some("hash"),
-                ',' => Some("comma"),
-                '(' => Some("open paren"),
-                ')' => Some("close paren"),
-                _ => None,
-            }
-        }
-
-        fn string_to_ident(s: &str) -> Option<String> {
-            s.chars().map(char_name).collect::<Option<String>>()
-        }
-
-        fn display_to_ident(toks: &[DisplayToken]) -> String {
-            let s = toks
-                .iter()
-                .map(|tok| match tok {
-                    DisplayToken::Caret => "caret".to_owned(),
-                    DisplayToken::String(s) => string_to_ident(s).unwrap(),
-                    DisplayToken::Char(c) => char_name(*c).unwrap().to_owned(),
-                    DisplayToken::Space => "".to_owned(),
-                    DisplayToken::Symbol(s) => s.to_owned(),
-                })
-                .collect::<Vec<String>>()
-                .join(" ");
-            s.to_upper_camel_case()
-        }
-
-        fn display_to_tuple_values(ctx: &SleighContext, toks: &[DisplayToken]) -> Vec<String> {
-            toks.iter()
-                .filter_map(|tok| match tok {
-                    DisplayToken::Symbol(s) => Some(s),
-                    _ => None,
-                })
-                .filter_map(|s| match ctx.symbols.get(s) {
-                    Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => Some(s),
-                    _ => None,
-                })
-                .map(|s| s.to_upper_camel_case())
-                .collect()
-        }
-
-        fn generate_tuple<S: AsRef<str>>(values: &[S]) -> TokenStream {
-            let to_ident = |value: &S| format_ident!("{}", value.as_ref().to_upper_camel_case());
-            match values {
-                [] => quote!(),
-                [value] => {
-                    let value = to_ident(value);
-                    quote!((#value))
-                }
-                _ => {
-                    let iter = values.iter().map(to_ident);
-                    quote!((#(#iter),*))
-                }
-            }
-        }
-
-        fn generate_enum_variant<S: AsRef<str>>(
-            doc: Option<&str>,
-            name: &str,
-            values: &[S],
-        ) -> TokenStream {
-            let doc = match doc {
-                Some(s) => quote!(#[doc = #s]),
-                None => quote!(),
-            };
-            let name = format_ident!("{}", name.to_upper_camel_case());
-            let values = generate_tuple(values);
-            quote![
-                #doc
-                #name #values ,
-            ]
-        }
-
-        fn generate_enum_variant_ctor(
-            ctx: &SleighContext,
-            ctor: &Constructor<OffAndSize>,
-        ) -> TokenStream {
-            let toks = &ctor.display.toks;
-            let doc = ctor.display.to_string();
-            let variant_name = display_to_ident(toks);
-            let variant_values = display_to_tuple_values(ctx, toks);
-            generate_enum_variant(Some(&doc), &variant_name, &variant_values)
-        }
-
-        let mnemonic_table = self
-            .symbols
-            .iter()
-            .find_map(|(symbol, data)| match (symbol.as_str(), data) {
-                (INSTRUCTION, SymbolData::Subtable(cs)) => Some(cs),
-                _ => None,
-            })
-            .unwrap()
-            .iter()
-            .map(|constructor| match constructor.display.toks.as_slice() {
-                [DisplayToken::Symbol(mnemonic), ..] => (mnemonic, constructor),
-                _ => panic!("instruction has no mnemonic"),
-            })
-            .fold(
-                HashMap::<&str, Vec<&Constructor<OffAndSize>>>::new(),
-                |mut acc, (mnemonic, constructor)| {
-                    acc.entry(mnemonic).or_default().push(constructor);
-                    acc
-                },
-            );
-
-        let mnemonic_enums = mnemonic_table
-            .iter()
-            .map(|(mnemonic, constructors)| {
-                if constructors.len() == 1 {
-                    return quote![];
-                }
-                let name = format_ident!("{}", mnemonic.to_upper_camel_case());
-                let variants = constructors
-                    .iter()
-                    .map(|constructor| generate_enum_variant_ctor(self, &constructor))
-                    .collect::<TokenStream>();
-                quote![enum #name { #variants }]
-            })
-            .collect::<TokenStream>();
-
-        let instruction_enum_variants = mnemonic_table
-            .iter()
-            .map(|(mnemonic, constructors)| match constructors.as_slice() {
-                [] => unimplemented!(),
-                [constructor] => {
-                    let doc = constructor.display.to_string();
-                    let variant_values = display_to_tuple_values(self, &constructor.display.toks);
-                    generate_enum_variant(Some(&doc), &mnemonic, &variant_values)
-                }
-                _ => generate_enum_variant(None, &mnemonic, &[&mnemonic]),
-            })
-            .collect::<TokenStream>();
-
-        let instruction_enum = quote![enum Instruction { #instruction_enum_variants }];
-
-        let token_types = self
-            .symbols
-            .iter()
-            .filter_map(|(symbol, data)| match data {
-                SymbolData::Value(token_field) => Some((symbol, token_field)),
-                _ => None,
-            })
-            .map(|(name, token_field)| {
-                let name = format_ident!("{}", name.to_upper_camel_case());
-                let bits = token_field.token_size * 8;
-                let inner_int_type = format_ident!("u{bits}");
-                quote![struct #name(#inner_int_type);]
-            })
-            .collect::<TokenStream>();
-
-        let constructor_types = self
-            .symbols
-            .iter()
-            .filter(|(symbol, _)| *symbol != INSTRUCTION)
-            .filter_map(|(symbol, data)| match data {
-                SymbolData::Subtable(cs) => Some((symbol, cs)),
-                _ => None,
-            })
-            .map(|(name, cs)| {
-                let name = format_ident!("{}", name.to_upper_camel_case());
-                match cs.as_slice() {
-                    [] => unreachable!(),
-                    [c] => {
-                        let doc = c.display.to_string();
-                        let values = display_to_tuple_values(self, &c.display.toks);
-                        let values = generate_tuple(&values);
-                        quote![
-                            #[doc = #doc]
-                            struct #name #values ;
-                        ]
-                    }
-                    _ => {
-                        let variants = cs
-                            .iter()
-                            .map(|c| generate_enum_variant_ctor(self, &c))
-                            .collect::<TokenStream>();
-                        quote![enum #name { #variants }]
-                    }
-                }
-            })
-            .collect::<TokenStream>();
-
-        quote![
-            #mnemonic_enums
-            #instruction_enum
-            #token_types
-            #constructor_types
-        ]
+        let generator = crate::rust_gen::RustCodeGenerator::new(self);
+        let types = generator.gen_all_types();
+        let impls = generator.gen_token_types_display_impl();
+        quote::quote!(#types #impls)
     }
 }
 

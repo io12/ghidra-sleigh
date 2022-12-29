@@ -1,6 +1,7 @@
 mod ast;
 mod context;
 mod parse;
+mod rust_gen;
 
 fn main() {
     let pp = parse::preprocess(std::io::stdin().lock());
