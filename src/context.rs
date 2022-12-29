@@ -424,42 +424,94 @@ impl SleighContext {
     }
 
     pub fn define_rust_types(&self) -> proc_macro2::TokenStream {
-        use proc_macro2::{Ident, TokenStream};
+        use heck::ToUpperCamelCase;
+        use proc_macro2::TokenStream;
         use quote::{format_ident, quote};
 
-        fn display_to_ident(toks: &[DisplayToken]) -> Ident {
+        fn char_name(c: char) -> Option<&'static str> {
+            match c {
+                '#' => Some("hash"),
+                ',' => Some("comma"),
+                '(' => Some("open paren"),
+                ')' => Some("close paren"),
+                _ => None,
+            }
+        }
+
+        fn string_to_ident(s: &str) -> Option<String> {
+            s.chars().map(char_name).collect::<Option<String>>()
+        }
+
+        fn display_to_ident(toks: &[DisplayToken]) -> String {
             let s = toks
                 .iter()
                 .map(|tok| match tok {
-                    DisplayToken::Caret => "_CARET_",
-                    DisplayToken::String(_) => "_STRING_",
-                    DisplayToken::Char(_) => "_CHAR_",
-                    DisplayToken::Space => "_",
-                    DisplayToken::Symbol(s) => s,
+                    DisplayToken::Caret => "caret".to_owned(),
+                    DisplayToken::String(s) => string_to_ident(s).unwrap(),
+                    DisplayToken::Char(c) => char_name(*c).unwrap().to_owned(),
+                    DisplayToken::Space => "".to_owned(),
+                    DisplayToken::Symbol(s) => s.to_owned(),
                 })
-                .collect::<String>();
-            format_ident!("{s}")
+                .collect::<Vec<String>>()
+                .join(" ");
+            s.to_upper_camel_case()
         }
 
-        fn display_to_tuple_values(ctx: &SleighContext, toks: &[DisplayToken]) -> TokenStream {
-            let values = toks
-                .iter()
+        fn display_to_tuple_values(ctx: &SleighContext, toks: &[DisplayToken]) -> Vec<String> {
+            toks.iter()
                 .filter_map(|tok| match tok {
                     DisplayToken::Symbol(s) => Some(s),
                     _ => None,
                 })
                 .filter_map(|s| match ctx.symbols.get(s) {
-                    Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => {
-                        Some(format_ident!("{s}"))
-                    }
+                    Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => Some(s),
                     _ => None,
-                });
-            let values = quote![#(#values),*];
-            if values.is_empty() {
-                values
-            } else {
-                quote![(#values)]
+                })
+                .map(|s| s.to_upper_camel_case())
+                .collect()
+        }
+
+        fn generate_tuple<S: AsRef<str>>(values: &[S]) -> TokenStream {
+            let to_ident = |value: &S| format_ident!("{}", value.as_ref().to_upper_camel_case());
+            match values {
+                [] => quote!(),
+                [value] => {
+                    let value = to_ident(value);
+                    quote!((#value))
+                }
+                _ => {
+                    let iter = values.iter().map(to_ident);
+                    quote!((#(#iter),*))
+                }
             }
+        }
+
+        fn generate_enum_variant<S: AsRef<str>>(
+            doc: Option<&str>,
+            name: &str,
+            values: &[S],
+        ) -> TokenStream {
+            let doc = match doc {
+                Some(s) => quote!(#[doc = #s]),
+                None => quote!(),
+            };
+            let name = format_ident!("{}", name.to_upper_camel_case());
+            let values = generate_tuple(values);
+            quote![
+                #doc
+                #name #values ,
+            ]
+        }
+
+        fn generate_enum_variant_ctor(
+            ctx: &SleighContext,
+            ctor: &Constructor<OffAndSize>,
+        ) -> TokenStream {
+            let toks = &ctor.display.toks;
+            let doc = ctor.display.to_string();
+            let variant_name = display_to_ident(toks);
+            let variant_values = display_to_tuple_values(ctx, toks);
+            generate_enum_variant(Some(&doc), &variant_name, &variant_values)
         }
 
         let mnemonic_table = self
@@ -489,19 +541,10 @@ impl SleighContext {
                 if constructors.len() == 1 {
                     return quote![];
                 }
-                let name = format_ident!("{mnemonic}");
+                let name = format_ident!("{}", mnemonic.to_upper_camel_case());
                 let variants = constructors
                     .iter()
-                    .map(|constructor| {
-                        let toks = &constructor.display.toks;
-                        let doc = constructor.display.to_string();
-                        let variant_name = display_to_ident(toks);
-                        let variant_values = display_to_tuple_values(self, toks);
-                        quote![
-                            #[doc = #doc]
-                            #variant_name #variant_values ,
-                        ]
-                    })
+                    .map(|constructor| generate_enum_variant_ctor(self, &constructor))
                     .collect::<TokenStream>();
                 quote![enum #name { #variants }]
             })
@@ -509,25 +552,18 @@ impl SleighContext {
 
         let instruction_enum_variants = mnemonic_table
             .iter()
-            .map(|(mnemonic, constructors)| {
-                let mnemonic = format_ident!("{mnemonic}");
-                match constructors.as_slice() {
-                    [] => unimplemented!(),
-                    [constructor] => {
-                        let doc = constructor.display.to_string();
-                        let variant_values =
-                            display_to_tuple_values(self, &constructor.display.toks);
-                        quote![
-                            #[doc = #doc]
-                            #mnemonic #variant_values ,
-                        ]
-                    }
-                    _ => quote![#mnemonic ( #mnemonic ) ,],
+            .map(|(mnemonic, constructors)| match constructors.as_slice() {
+                [] => unimplemented!(),
+                [constructor] => {
+                    let doc = constructor.display.to_string();
+                    let variant_values = display_to_tuple_values(self, &constructor.display.toks);
+                    generate_enum_variant(Some(&doc), &mnemonic, &variant_values)
                 }
+                _ => generate_enum_variant(None, &mnemonic, &[&mnemonic]),
             })
             .collect::<TokenStream>();
 
-        let instruction_enum = quote![enum instruction { #instruction_enum_variants }];
+        let instruction_enum = quote![enum Instruction { #instruction_enum_variants }];
 
         let token_types = self
             .symbols
@@ -537,7 +573,7 @@ impl SleighContext {
                 _ => None,
             })
             .map(|(name, token_field)| {
-                let name = format_ident!("{name}");
+                let name = format_ident!("{}", name.to_upper_camel_case());
                 let bits = token_field.token_size * 8;
                 let inner_int_type = format_ident!("u{bits}");
                 quote![struct #name(#inner_int_type);]
@@ -553,12 +589,13 @@ impl SleighContext {
                 _ => None,
             })
             .map(|(name, cs)| {
-                let name = format_ident!("{name}");
+                let name = format_ident!("{}", name.to_upper_camel_case());
                 match cs.as_slice() {
                     [] => unreachable!(),
                     [c] => {
                         let doc = c.display.to_string();
                         let values = display_to_tuple_values(self, &c.display.toks);
+                        let values = generate_tuple(&values);
                         quote![
                             #[doc = #doc]
                             struct #name #values ;
@@ -567,15 +604,7 @@ impl SleighContext {
                     _ => {
                         let variants = cs
                             .iter()
-                            .map(|c| {
-                                let doc = c.display.to_string();
-                                let variant_name = display_to_ident(&c.display.toks);
-                                let variant_values = display_to_tuple_values(self, &c.display.toks);
-                                quote![
-                                    #[doc = #doc]
-                                    #variant_name #variant_values ,
-                                ]
-                            })
+                            .map(|c| generate_enum_variant_ctor(self, &c))
                             .collect::<TokenStream>();
                         quote![enum #name { #variants }]
                     }
