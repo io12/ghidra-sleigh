@@ -426,9 +426,7 @@ impl SleighContext {
 
     pub fn define_rust_types(&self) -> proc_macro2::TokenStream {
         let generator = crate::rust_gen::RustCodeGenerator::new(self);
-        let types = generator.gen_all_types();
-        let impls = generator.gen_token_types_display_impl();
-        quote::quote!(#types #impls)
+        generator.out()
     }
 }
 

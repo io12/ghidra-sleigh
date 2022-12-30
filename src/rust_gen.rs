@@ -82,7 +82,7 @@ impl<'a> RustCodeGenerator<'a> {
         quote!(enum Instruction { #variants })
     }
 
-    fn token_fields(&self) -> impl Iterator<Item = (Ident, TokenField)> {
+    fn token_fields(&self) -> impl Iterator<Item = (Ident, TokenField)> + 'a {
         self.ctx
             .symbols
             .iter()
@@ -177,7 +177,7 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
-    pub fn gen_all_types(&self) -> TokenStream {
+    fn gen_all_types(&self) -> TokenStream {
         let mnemonic_enums = self.gen_dup_mnemonic_enums();
         let instruction_enum = self.gen_instruction_enum();
         let token_types = self.gen_token_types();
@@ -190,30 +190,30 @@ impl<'a> RustCodeGenerator<'a> {
         ]
     }
 
-    pub fn gen_token_types_display_impl(&self) -> TokenStream {
+    fn gen_token_types_display_impl(&self) -> TokenStream {
         self.token_fields()
-            .map(|(name, _)| {
-                quote! {
-                    impl std::fmt::Display for #name {
-                        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                            write!(f, "{}", self.0)
-                        }
-                    }
-                }
-            })
+            .map(|(name, _)| gen_display_impl(name, quote! { write!(f, "{}", self.0) }))
             .collect()
     }
 
     fn gen_non_root_singleton_constructor_types_display_impl(&self) -> TokenStream {
         self.non_root_singleton_constructors()
-            .map(|(name, c)| {
-                let writes = display_to_tuple_values(self.ctx, &c.display.toks)
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| {})
-                    .collect::<TokenStream>();
+            .map(|(name, constructor)| {
+                let writes = gen_display_write(&constructor.display.toks);
+                gen_display_impl(name, quote! { #writes Ok(()) })
             })
             .collect()
+    }
+
+    fn gen_non_root_multi_constructor_types_display_impl(&self) -> TokenStream {
+        todo!()
+    }
+
+    pub fn out(&self) -> TokenStream {
+        let types = self.gen_all_types();
+        let d1 = self.gen_token_types_display_impl();
+        let d2 = self.gen_non_root_singleton_constructor_types_display_impl();
+        quote! { #types #d1 #d2 }
     }
 }
 
@@ -298,4 +298,43 @@ fn generate_enum_variant_ctor(ctx: &SleighContext, ctor: &Constructor<OffAndSize
     let variant_name = display_to_ident(toks);
     let variant_values = display_to_tuple_values(ctx, toks);
     generate_enum_variant(Some(&doc), &variant_name, &variant_values)
+}
+
+fn iter_display_tok_fields(
+    toks: &[DisplayToken],
+) -> impl Iterator<Item = (Option<usize>, &DisplayToken)> {
+    toks.iter().scan(0, |state, tok| match tok {
+        DisplayToken::Symbol(_) => {
+            let i = *state;
+            *state += 1;
+            Some((Some(i), tok))
+        }
+        _ => Some((None, tok)),
+    })
+}
+
+fn gen_display_write(toks: &[DisplayToken]) -> TokenStream {
+    iter_display_tok_fields(toks)
+        .map(|(opt_field, tok)| match (opt_field, tok) {
+            (None, DisplayToken::Caret) => quote! {},
+            (None, DisplayToken::String(s)) => quote! { f.write_str(#s)?; },
+            (None, DisplayToken::Char(c)) => quote! { f.write_char(#c)?; },
+            (None, DisplayToken::Space) => quote! { f.write_char(' ')?; },
+            (Some(i), DisplayToken::Symbol(_)) => {
+                let var = format_ident!("_{i}");
+                quote! { write!(f, "{}", #var)?; }
+            }
+            (None, DisplayToken::Symbol(_)) | (Some(_), _) => unreachable!(),
+        })
+        .collect()
+}
+
+fn gen_display_impl(name: Ident, body: TokenStream) -> TokenStream {
+    quote! {
+        impl std::fmt::Display for #name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                #body
+            }
+        }
+    }
 }
