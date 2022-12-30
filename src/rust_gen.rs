@@ -246,18 +246,35 @@ fn display_to_ident(toks: &[DisplayToken]) -> String {
     s.to_upper_camel_case()
 }
 
-fn display_to_tuple_values(ctx: &SleighContext, toks: &[DisplayToken]) -> Vec<String> {
-    toks.iter()
-        .filter_map(|tok| match tok {
-            DisplayToken::Symbol(s) => Some(s),
-            _ => None,
-        })
-        .filter_map(|s| match ctx.symbols.get(s) {
+fn token_is_live_symbol<'a>(ctx: &SleighContext, tok: &'a DisplayToken) -> Option<&'a str> {
+    match tok {
+        DisplayToken::Symbol(s) => match ctx.symbols.get(s) {
             Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => Some(s),
             _ => None,
-        })
+        },
+        _ => None,
+    }
+}
+
+fn iter_live_symbols<'a>(
+    ctx: &'a SleighContext,
+    toks: &'a [DisplayToken],
+) -> impl Iterator<Item = &'a str> {
+    toks.iter().filter_map(|tok| token_is_live_symbol(ctx, tok))
+}
+
+fn display_to_tuple_values(ctx: &SleighContext, toks: &[DisplayToken]) -> Vec<String> {
+    iter_live_symbols(ctx, toks)
         .map(|s| s.to_upper_camel_case())
         .collect()
+}
+
+fn gen_tuple_destruct(ctx: &SleighContext, toks: &[DisplayToken]) -> TokenStream {
+    let values = iter_live_symbols(ctx, toks)
+        .enumerate()
+        .map(|(i, _)| format!("_{i}"))
+        .collect::<Vec<String>>();
+    generate_tuple(&values)
 }
 
 fn generate_tuple<S: AsRef<str>>(values: &[S]) -> TokenStream {
