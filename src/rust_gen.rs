@@ -169,7 +169,7 @@ fn make_non_root_multi_ctors(ctx: &SleighContext) -> Vec<MultiConstructor> {
                         let tuple_type = gen_tuple_type(ctx, toks);
                         let enum_def_line = quote! { #variant_name #tuple_type , };
                         let tuple_destruct = gen_tuple_destruct(ctx, toks);
-                        let match_pattern = quote! { #variant_name #tuple_destruct };
+                        let match_pattern = quote! { #name :: #variant_name #tuple_destruct };
                         CtorEnumVariant {
                             ctor,
                             inner: EnumVariant {
@@ -204,7 +204,7 @@ fn make_mnemonic_enums<'a>(
                         ctor,
                         inner: EnumVariant {
                             enum_def_line: quote! { #name #tuple_type , },
-                            match_pattern: quote! { #name #tuple_destruct },
+                            match_pattern: quote! { #mnemonic :: #name #tuple_destruct },
                         },
                     }
                 })
@@ -234,13 +234,13 @@ fn make_instruction_enum<'a>(
                     ctor,
                     inner: EnumVariant {
                         enum_def_line: quote! { #mnemonic #tuple_type , },
-                        match_pattern: quote! { #mnemonic #tuple_destruct },
+                        match_pattern: quote! { Instruction :: #mnemonic #tuple_destruct },
                     },
                 })
             }
             _ => InstructionEnumVariant::Duplicate(EnumVariant {
                 enum_def_line: quote! { #mnemonic ( #mnemonic ) , },
-                match_pattern: quote! { #mnemonic ( _0 ) },
+                match_pattern: quote! { Instruction :: #mnemonic ( _0 ) },
             }),
         })
         .collect()
