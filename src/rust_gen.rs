@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 
 use crate::ast::Atomic;
 use crate::ast::Constraint;
@@ -30,13 +29,13 @@ use proc_macro2::Literal;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-type RootTable<'a> = HashMap<Ident, Vec<&'a Constructor<OffAndSize>>>;
+type RootTable<'a> = BTreeMap<Ident, Vec<&'a Constructor<OffAndSize>>>;
 
 pub struct RustCodeGenerator<'a> {
     ctx: &'a SleighContext,
     token_fields: BTreeMap<&'a str, TokenFieldData>,
-    non_root_sing_ctors: Vec<NonRootSingletonConstructor<'a>>,
-    non_root_mult_ctors: Vec<MultiConstructor<'a>>,
+    non_root_sing_ctors: BTreeMap<&'a str, NonRootSingletonConstructor<'a>>,
+    non_root_mult_ctors: BTreeMap<&'a str, MultiConstructor<'a>>,
     instruction_enum: Vec<InstructionEnumVariant<'a>>,
     mnemonic_enums: Vec<MultiConstructor<'a>>,
 }
@@ -45,7 +44,9 @@ pub struct RustCodeGenerator<'a> {
 /// struct Name(InnerIntType);
 /// ```
 struct TokenFieldData {
+    parent: Ident,
     name: Ident,
+    qualified_name: TokenStream,
     field: TokenField,
     inner_int_type: Ident,
 }
@@ -60,8 +61,6 @@ struct TokenFieldData {
 struct NonRootSingletonConstructor<'a> {
     name: Ident,
     ctor: &'a Constructor<OffAndSize>,
-    struct_def: TokenStream,
-    destruct_stmt: TokenStream,
 }
 
 /// ```text
@@ -88,8 +87,8 @@ struct CtorEnumVariant<'a> {
 }
 
 struct EnumVariant {
-    enum_def_line: TokenStream,
-    match_pattern: TokenStream,
+    name: Ident,
+    qualified_name: TokenStream,
 }
 
 enum InstructionEnumVariant<'a> {
@@ -97,13 +96,73 @@ enum InstructionEnumVariant<'a> {
     Unique(CtorEnumVariant<'a>),
 }
 
-fn symbol_to_ident(s: &str) -> Ident {
+enum LiveSymbol<'a> {
+    Subtable(Subtable<'a>),
+    Value(&'a TokenFieldData),
+}
+
+enum Subtable<'a> {
+    Singleton(&'a NonRootSingletonConstructor<'a>),
+    Multi(&'a MultiConstructor<'a>),
+    Root,
+}
+
+impl<'a> LiveSymbol<'a> {
+    fn to_type(self) -> TokenStream {
+        match self {
+            LiveSymbol::Subtable(s) => s.to_type(),
+            LiveSymbol::Value(s) => s.qualified_name.clone(),
+        }
+    }
+
+    fn gen_call_disasm(self, input: &TokenStream) -> TokenStream {
+        match self {
+            LiveSymbol::Subtable(s) => s.gen_call_disasm(input),
+            LiveSymbol::Value(s) => s.gen_call_disasm(input),
+        }
+    }
+}
+
+impl<'a> Subtable<'a> {
+    fn name(&self) -> Ident {
+        match self {
+            Subtable::Singleton(NonRootSingletonConstructor { name, .. })
+            | Subtable::Multi(MultiConstructor { name, .. }) => name.clone(),
+            Subtable::Root => instruction_ident(),
+        }
+    }
+
+    fn to_type(&self) -> TokenStream {
+        let name = self.name();
+        quote!(#name)
+    }
+
+    fn gen_call_disasm(&self, input: &TokenStream) -> TokenStream {
+        let typ = self.to_type();
+        quote! { #typ::disasm(#input)? }
+    }
+}
+
+fn symbol_to_type_ident(s: &str) -> Ident {
     use heck::ToUpperCamelCase;
     format_ident!("{}", s.to_upper_camel_case())
 }
 
+fn symbol_to_mod_ident(s: &str) -> Ident {
+    use heck::ToSnakeCase;
+    format_ident!("{}", s.to_snake_case())
+}
+
+fn collect_to_map_vec<K: Ord, V>(iter: impl Iterator<Item = (K, V)>) -> BTreeMap<K, Vec<V>> {
+    iter.fold(BTreeMap::new(), |mut acc, (mnemonic, constructor)| {
+        acc.entry(mnemonic).or_default().push(constructor);
+        acc
+    })
+}
+
 fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
-    ctx.symbols
+    let iter = ctx
+        .symbols
         .iter()
         .find_map(|(symbol, data)| match (symbol.as_str(), data) {
             (INSTRUCTION, SymbolData::Subtable(cs)) => Some(cs),
@@ -115,25 +174,27 @@ fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
             [DisplayToken::Symbol(mnemonic), ..] => (mnemonic, constructor),
             _ => panic!("instruction has no mnemonic"),
         })
-        .map(|(mnemonic, constructor)| (symbol_to_ident(&mnemonic), constructor))
-        .fold(RootTable::new(), |mut acc, (mnemonic, constructor)| {
-            acc.entry(mnemonic).or_default().push(constructor);
-            acc
-        })
+        .map(|(mnemonic, constructor)| (symbol_to_type_ident(&mnemonic), constructor));
+    collect_to_map_vec(iter)
 }
 
 fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
     ctx.symbols
         .iter()
         .filter_map(|(symbol, data)| match data {
-            SymbolData::Value(token_field) => Some((
-                symbol.as_str(),
-                TokenFieldData {
-                    name: symbol_to_ident(&symbol),
-                    field: *token_field,
+            SymbolData::Value(token_field) => {
+                let name = symbol_to_type_ident(&symbol);
+                let parent = symbol_to_mod_ident(&token_field.parent_name);
+                let qualified_name = quote!(#parent::#name);
+                let data = TokenFieldData {
+                    name,
+                    parent,
+                    qualified_name,
+                    field: token_field.clone(),
                     inner_int_type: format_ident!("u{}", token_field.token_size * 8),
-                },
-            )),
+                };
+                Some((symbol.as_str(), data))
+            }
             _ => None,
         })
         .collect()
@@ -141,63 +202,64 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
 
 fn non_root_iter(
     ctx: &SleighContext,
-) -> impl Iterator<Item = (Ident, &Vec<Constructor<OffAndSize>>)> {
+) -> impl Iterator<Item = (&str, &Vec<Constructor<OffAndSize>>)> {
     ctx.symbols
         .iter()
         .filter(|(symbol, _)| *symbol != INSTRUCTION)
         .filter_map(|(symbol, data)| match data {
-            SymbolData::Subtable(cs) => Some((symbol_to_ident(symbol), cs)),
+            SymbolData::Subtable(cs) => Some((symbol.as_str(), cs)),
             _ => None,
         })
 }
 
-fn make_non_root_sing_ctors(ctx: &SleighContext) -> Vec<NonRootSingletonConstructor> {
+fn make_non_root_sing_ctors(ctx: &SleighContext) -> BTreeMap<&str, NonRootSingletonConstructor> {
     non_root_iter(ctx)
-        .filter_map(|(name, cs)| match cs.as_slice() {
+        .filter_map(|(name_str, cs)| match cs.as_slice() {
             [] => unreachable!(),
             [ctor] => {
-                let toks = &ctor.display.toks;
-                let tuple_type = gen_tuple_type(ctx, toks);
-                let struct_def = quote! { struct #name #tuple_type ; };
-                let tuple_destruct = gen_tuple_destruct(ctx, toks);
-                let destruct_stmt = quote! { let #name #tuple_destruct = self ; };
-                Some(NonRootSingletonConstructor {
-                    name,
-                    ctor,
-                    struct_def,
-                    destruct_stmt,
-                })
+                let name_ident = symbol_to_type_ident(name_str);
+                Some((
+                    name_str,
+                    NonRootSingletonConstructor {
+                        name: name_ident,
+                        ctor,
+                    },
+                ))
             }
             _ => None,
         })
         .collect()
 }
 
-fn make_non_root_multi_ctors(ctx: &SleighContext) -> Vec<MultiConstructor> {
+fn make_non_root_multi_ctors(ctx: &SleighContext) -> BTreeMap<&str, MultiConstructor> {
     non_root_iter(ctx)
-        .filter_map(|(name, cs)| match cs.as_slice() {
+        .filter_map(|(name_str, cs)| match cs.as_slice() {
             [] => unreachable!(),
             [_] => None,
             _ => {
+                let name_ident = symbol_to_type_ident(name_str);
                 let variants = cs
                     .iter()
                     .map(|ctor| {
                         let toks = &ctor.display.toks;
                         let variant_name = display_to_ident(toks);
-                        let tuple_type = gen_tuple_type(ctx, toks);
-                        let enum_def_line = quote! { #variant_name #tuple_type , };
-                        let tuple_destruct = gen_tuple_destruct(ctx, toks);
-                        let match_pattern = quote! { #name :: #variant_name #tuple_destruct };
+                        let qualified_name = quote!(#name_ident::#variant_name);
                         CtorEnumVariant {
                             ctor,
                             inner: EnumVariant {
-                                enum_def_line,
-                                match_pattern,
+                                name: variant_name,
+                                qualified_name,
                             },
                         }
                     })
                     .collect();
-                Some(MultiConstructor { name, variants })
+                Some((
+                    name_str,
+                    MultiConstructor {
+                        name: name_ident,
+                        variants,
+                    },
+                ))
             }
         })
         .collect()
@@ -216,13 +278,12 @@ fn make_mnemonic_enums<'a>(
                 .map(|ctor| {
                     let toks = &&ctor.display.toks;
                     let name = display_to_ident(toks.get(1..).unwrap());
-                    let tuple_type = gen_tuple_type(ctx, toks);
-                    let tuple_destruct = gen_tuple_destruct(ctx, toks);
+                    let qualified_name = quote!(#mnemonic::#name);
                     CtorEnumVariant {
                         ctor,
                         inner: EnumVariant {
-                            enum_def_line: quote! { #name #tuple_type , },
-                            match_pattern: quote! { #mnemonic :: #name #tuple_destruct },
+                            name,
+                            qualified_name,
                         },
                     }
                 })
@@ -241,25 +302,26 @@ fn make_instruction_enum<'a>(
 ) -> Vec<InstructionEnumVariant<'a>> {
     root_table
         .iter()
-        .map(|(mnemonic, constructors)| match constructors.as_slice() {
-            [] => unimplemented!(),
-            [ctor] => {
-                let toks = &ctor.display.toks;
-                let doc = ctor.display.to_string();
-                let tuple_type = gen_tuple_type(ctx, toks);
-                let tuple_destruct = gen_tuple_destruct(ctx, toks);
-                InstructionEnumVariant::Unique(CtorEnumVariant {
-                    ctor,
-                    inner: EnumVariant {
-                        enum_def_line: quote! { #mnemonic #tuple_type , },
-                        match_pattern: quote! { Instruction :: #mnemonic #tuple_destruct },
-                    },
-                })
+        .map(|(mnemonic, constructors)| {
+            let qualified_name = quote!(Instruction::#mnemonic);
+            match constructors.as_slice() {
+                [] => unimplemented!(),
+                [ctor] => {
+                    let toks = &ctor.display.toks;
+                    let doc = ctor.display.to_string();
+                    InstructionEnumVariant::Unique(CtorEnumVariant {
+                        ctor,
+                        inner: EnumVariant {
+                            name: mnemonic.clone(),
+                            qualified_name,
+                        },
+                    })
+                }
+                _ => InstructionEnumVariant::Duplicate(EnumVariant {
+                    name: mnemonic.clone(),
+                    qualified_name,
+                }),
             }
-            _ => InstructionEnumVariant::Duplicate(EnumVariant {
-                enum_def_line: quote! { #mnemonic ( #mnemonic ) , },
-                match_pattern: quote! { Instruction :: #mnemonic ( _0 ) },
-            }),
         })
         .collect()
 }
@@ -284,8 +346,74 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
+    fn lookup_subtable(&self, name: &str) -> Option<Subtable> {
+        if name == INSTRUCTION {
+            Some(Subtable::Root)
+        } else {
+            self.non_root_sing_ctors
+                .get(name)
+                .map(|c| Subtable::Singleton(c))
+                .or_else(|| {
+                    self.non_root_mult_ctors
+                        .get(name)
+                        .map(|c| Subtable::Multi(c))
+                })
+        }
+    }
+
+    fn lookup_live_symbol(&self, symbol: &str) -> Option<LiveSymbol> {
+        self.token_fields
+            .get(symbol)
+            .map(LiveSymbol::Value)
+            .or_else(|| self.lookup_subtable(symbol).map(LiveSymbol::Subtable))
+    }
+
+    fn token_to_live_symbol(&'a self, tok: &'a DisplayToken) -> Option<LiveSymbol<'a>> {
+        match tok {
+            DisplayToken::Symbol(s) => self.lookup_live_symbol(s),
+            _ => None,
+        }
+    }
+
+    fn iter_live_symbols(
+        &'a self,
+        toks: &'a [DisplayToken],
+    ) -> impl Iterator<Item = LiveSymbol<'a>> + 'a {
+        toks.iter().filter_map(|tok| self.token_to_live_symbol(tok))
+    }
+
+    fn gen_tuple_type(&self, toks: &[DisplayToken]) -> TokenStream {
+        let types = self
+            .iter_live_symbols(toks)
+            .map(|s| s.to_type())
+            .collect::<Vec<TokenStream>>();
+        gen_tuple(&types)
+    }
+
+    fn gen_enum_variant(
+        &self,
+        CtorEnumVariant {
+            ctor,
+            inner: EnumVariant { name, .. },
+        }: &CtorEnumVariant,
+    ) -> TokenStream {
+        let tuple_type = self.gen_tuple_type(&ctor.display.toks);
+        quote! { #name #tuple_type , }
+    }
+
+    fn gen_multi_ctors(&self, iter: impl Iterator<Item = &'a MultiConstructor<'a>>) -> TokenStream {
+        iter.map(|MultiConstructor { name, variants }| {
+            let variants = variants
+                .iter()
+                .map(|variant| self.gen_enum_variant(variant))
+                .collect::<TokenStream>();
+            quote! { enum #name { #variants } }
+        })
+        .collect()
+    }
+
     fn gen_mnemonic_enums(&self) -> TokenStream {
-        gen_multi_ctors(self.mnemonic_enums.iter())
+        self.gen_multi_ctors(self.mnemonic_enums.iter())
     }
 
     fn gen_instruction_enum(&self) -> TokenStream {
@@ -293,42 +421,61 @@ impl<'a> RustCodeGenerator<'a> {
             .instruction_enum
             .iter()
             .map(|variant| match variant {
-                InstructionEnumVariant::Duplicate(EnumVariant { enum_def_line, .. }) => {
-                    enum_def_line
+                InstructionEnumVariant::Duplicate(EnumVariant { name, .. }) => {
+                    quote! { #name(#name), }
                 }
                 InstructionEnumVariant::Unique(CtorEnumVariant {
-                    inner: EnumVariant { enum_def_line, .. },
-                    ..
-                }) => enum_def_line,
+                    ctor,
+                    inner: EnumVariant { name, .. },
+                }) => {
+                    let tuple_type = self.gen_tuple_type(&ctor.display.toks);
+                    quote! { #name #tuple_type , }
+                }
             })
-            .cloned()
             .collect::<TokenStream>();
         quote!(enum Instruction { #variants })
     }
 
     fn gen_token_types(&self) -> TokenStream {
-        self.token_fields
+        let token_defs = self
+            .token_fields
             .values()
-            .map(
-                |TokenFieldData {
-                     name,
-                     inner_int_type,
-                     ..
-                 }| quote! { struct #name ( #inner_int_type ) ; },
-            )
+            .map(|field| (&field.parent, field));
+        let token_defs = collect_to_map_vec(token_defs);
+        token_defs
+            .iter()
+            .map(|(parent, fields)| {
+                let fields = fields
+                    .iter()
+                    .map(
+                        |TokenFieldData {
+                             name,
+                             inner_int_type,
+                             ..
+                         }| quote! { pub(super) struct #name(pub(super) #inner_int_type); },
+                    )
+                    .collect::<TokenStream>();
+                quote! {
+                    mod #parent {
+                        #fields
+                    }
+                }
+            })
             .collect()
     }
 
     fn gen_non_root_singleton_constructor_types(&self) -> TokenStream {
         self.non_root_sing_ctors
-            .iter()
-            .map(|NonRootSingletonConstructor { struct_def, .. }| struct_def)
-            .cloned()
+            .values()
+            .map(|NonRootSingletonConstructor { name, ctor, .. }| {
+                let tuple_type = self.gen_tuple_type(&ctor.display.toks);
+                quote! { struct #name #tuple_type ; }
+            })
             .collect()
     }
 
     fn gen_non_root_multi_constructor_types(&self) -> TokenStream {
-        gen_multi_ctors(self.non_root_mult_ctors.iter())
+        self.gen_multi_ctors(self.non_root_mult_ctors.values())
     }
 
     fn gen_constructor_types(&self) -> TokenStream {
@@ -356,42 +503,57 @@ impl<'a> RustCodeGenerator<'a> {
     fn gen_token_types_display_impl(&self) -> TokenStream {
         self.token_fields
             .values()
-            .map(|TokenFieldData { name, .. }| {
-                gen_display_impl(name, quote! { write!(f, "{}", self.0) })
+            .map(|TokenFieldData { qualified_name, .. }| {
+                gen_display_impl(qualified_name, quote! { write!(f, "{}", self.0) })
             })
             .collect()
     }
 
-    fn gen_non_root_sing_ctor_types_display_impl(&self) -> TokenStream {
-        self.non_root_sing_ctors
-            .iter()
-            .map(
-                |NonRootSingletonConstructor {
-                     name,
-                     ctor,
-                     destruct_stmt,
-                     ..
-                 }| {
-                    let writes = self.gen_display_write_stmts(&ctor.display.toks);
-                    let body = quote! {
-                        #destruct_stmt
-                        #writes
-                        Ok(())
-                    };
-                    gen_display_impl(name, body)
-                },
-            )
-            .collect()
-    }
-
-    fn gen_multi_ctor_display_impl_arm(
+    fn gen_match_pattern(
         &self,
         CtorEnumVariant {
             ctor,
-            inner: EnumVariant { match_pattern, .. },
+            inner: EnumVariant { qualified_name, .. },
         }: &CtorEnumVariant,
     ) -> TokenStream {
-        let writes = self.gen_display_write_stmts(&ctor.display.toks);
+        let tuple_destruct = self.gen_tuple_destruct(&ctor.display.toks);
+        quote!(#qualified_name #tuple_destruct)
+    }
+
+    fn gen_match_pattern_insn_dup(
+        &self,
+        EnumVariant { qualified_name, .. }: &EnumVariant,
+    ) -> TokenStream {
+        quote!(#qualified_name(_0))
+    }
+
+    fn gen_destruct_stmt(
+        &self,
+        NonRootSingletonConstructor { name, ctor, .. }: &NonRootSingletonConstructor,
+    ) -> TokenStream {
+        let tuple_destruct = self.gen_tuple_destruct(&ctor.display.toks);
+        quote! { let #name #tuple_destruct = self; }
+    }
+
+    fn gen_non_root_sing_ctor_types_display_impl(&self) -> TokenStream {
+        self.non_root_sing_ctors
+            .values()
+            .map(|nrsc @ NonRootSingletonConstructor { name, .. }| {
+                let destruct_stmt = self.gen_destruct_stmt(nrsc);
+                let writes = self.gen_display_write_stmts(&nrsc.ctor.display.toks);
+                let body = quote! {
+                    #destruct_stmt
+                    #writes
+                    Ok(())
+                };
+                gen_display_impl(&quote!(#name), body)
+            })
+            .collect()
+    }
+
+    fn gen_multi_ctor_display_impl_arm(&self, variant: &CtorEnumVariant) -> TokenStream {
+        let match_pattern = self.gen_match_pattern(variant);
+        let writes = self.gen_display_write_stmts(&variant.ctor.display.toks);
         quote! { #match_pattern => { #writes } }
     }
 
@@ -410,13 +572,13 @@ impl<'a> RustCodeGenerator<'a> {
                 }
                 Ok(())
             };
-            gen_display_impl(name, body)
+            gen_display_impl(&quote!(#name), body)
         })
         .collect()
     }
 
     fn gen_non_root_multi_ctor_types_display_impl(&self) -> TokenStream {
-        self.gen_multi_ctor_display_impl(self.non_root_mult_ctors.iter())
+        self.gen_multi_ctor_display_impl(self.non_root_mult_ctors.values())
     }
 
     fn iter_display_tok_fields(
@@ -424,7 +586,7 @@ impl<'a> RustCodeGenerator<'a> {
         toks: &'a [DisplayToken],
     ) -> impl Iterator<Item = (Option<usize>, &'a DisplayToken)> {
         toks.iter().scan(0, |state, tok| {
-            if token_is_live_symbol(self.ctx, tok).is_some() {
+            if self.token_to_live_symbol(tok).is_some() {
                 let i = *state;
                 *state += 1;
                 Some((Some(i), tok))
@@ -432,6 +594,18 @@ impl<'a> RustCodeGenerator<'a> {
                 Some((None, tok))
             }
         })
+    }
+
+    fn gen_tuple_destruct(&self, toks: &[DisplayToken]) -> TokenStream {
+        let bindings = self
+            .iter_live_symbols(toks)
+            .enumerate()
+            .map(|(i, _)| {
+                let ident = format_ident!("_{i}");
+                quote!(#ident)
+            })
+            .collect::<Vec<TokenStream>>();
+        gen_tuple(&bindings)
     }
 
     fn gen_display_write_stmts(&self, toks: &[DisplayToken]) -> TokenStream {
@@ -461,7 +635,8 @@ impl<'a> RustCodeGenerator<'a> {
             .instruction_enum
             .iter()
             .map(|variant| match variant {
-                InstructionEnumVariant::Duplicate(EnumVariant { match_pattern, .. }) => {
+                InstructionEnumVariant::Duplicate(variant) => {
+                    let match_pattern = self.gen_match_pattern_insn_dup(variant);
                     quote! {
                         #match_pattern => {
                             write!(f, "{}", _0)?;
@@ -479,7 +654,7 @@ impl<'a> RustCodeGenerator<'a> {
             }
             Ok(())
         };
-        gen_display_impl(&instruction_ident(), body)
+        gen_display_impl(&quote!(Instruction), body)
     }
 
     fn gen_all_display_impls(&self) -> TokenStream {
@@ -497,8 +672,8 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
-    fn gen_tok_reads(&self) -> TokenStream {
-        self.token_fields.values().map(gen_tok_read).collect()
+    fn gen_tok_disasms(&self) -> TokenStream {
+        self.token_fields.values().map(gen_tok_disasm).collect()
     }
 
     fn gen_check_pattern(
@@ -529,8 +704,8 @@ impl<'a> RustCodeGenerator<'a> {
                         let token = self.token_fields.get(symbol.as_str()).unwrap();
                         let expr = expr.gen();
                         let input = quote! { input.get(#off..)? };
-                        let token_read = token.gen_call_read(&input);
-                        quote! { (#token_read #op #expr) }
+                        let token_disasm = token.gen_call_disasm(&input);
+                        quote! { (#token_disasm #op #expr) }
                     }
                     Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
                     Atomic::Parenthesized(p) => self.gen_check_pattern(input, p),
@@ -556,15 +731,16 @@ impl<'a> RustCodeGenerator<'a> {
     ) -> TokenStream {
         let input = quote!(input);
         let check_pattern = self.gen_check_pattern(&input, &ctor.p_equation);
-        let construct_args = iter_live_symbols(self.ctx, &ctor.display.toks).map(|s| {
-            let token = self.token_fields.get(s).unwrap();
-            token.gen_call_read(&input)
-        });
+        let construct_args = self
+            .iter_live_symbols(&ctor.display.toks)
+            .map(|s| s.gen_call_disasm(&input))
+            .collect::<Vec<TokenStream>>();
+        let construct_args = gen_tuple(&construct_args);
         quote! {
             impl #name {
                 fn disasm(input: &[u8]) -> Option<Self> {
                     if #check_pattern {
-                        Some(#name(#(#construct_args),*))
+                        Some(#name #construct_args)
                     } else {
                         None
                     }
@@ -575,13 +751,13 @@ impl<'a> RustCodeGenerator<'a> {
 
     fn gen_non_root_sing_ctor_disasms(&self) -> TokenStream {
         self.non_root_sing_ctors
-            .iter()
+            .values()
             .map(|c| self.gen_non_root_sing_ctor_disasm(c))
             .collect()
     }
 
     fn gen_disasm(&self) -> TokenStream {
-        let tok_reads = self.gen_tok_reads();
+        let tok_reads = self.gen_tok_disasms();
         let non_root_sing_ctor_disasms = self.gen_non_root_sing_ctor_disasms();
         quote! {
             #tok_reads
@@ -627,42 +803,10 @@ fn display_to_ident(toks: &[DisplayToken]) -> Ident {
         })
         .collect::<Vec<String>>()
         .join(" ");
-    symbol_to_ident(&s)
+    symbol_to_type_ident(&s)
 }
 
-fn token_is_live_symbol<'a>(ctx: &SleighContext, tok: &'a DisplayToken) -> Option<&'a str> {
-    match tok {
-        DisplayToken::Symbol(s) => match ctx.symbols.get(s) {
-            Some(SymbolData::Subtable(_) | SymbolData::Value(_)) => Some(s),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn iter_live_symbols<'a>(
-    ctx: &'a SleighContext,
-    toks: &'a [DisplayToken],
-) -> impl Iterator<Item = &'a str> {
-    toks.iter().filter_map(|tok| token_is_live_symbol(ctx, tok))
-}
-
-fn gen_tuple_type(ctx: &SleighContext, toks: &[DisplayToken]) -> TokenStream {
-    let types = iter_live_symbols(ctx, toks)
-        .map(symbol_to_ident)
-        .collect::<Vec<Ident>>();
-    gen_tuple(&types)
-}
-
-fn gen_tuple_destruct(ctx: &SleighContext, toks: &[DisplayToken]) -> TokenStream {
-    let bindings = iter_live_symbols(ctx, toks)
-        .enumerate()
-        .map(|(i, _)| format_ident!("_{i}"))
-        .collect::<Vec<Ident>>();
-    gen_tuple(&bindings)
-}
-
-fn gen_tuple(values: &[Ident]) -> TokenStream {
+fn gen_tuple(values: &[TokenStream]) -> TokenStream {
     match values {
         [] => quote!(),
         [value] => {
@@ -674,7 +818,7 @@ fn gen_tuple(values: &[Ident]) -> TokenStream {
     }
 }
 
-fn gen_display_impl(name: &Ident, body: TokenStream) -> TokenStream {
+fn gen_display_impl(name: &TokenStream, body: TokenStream) -> TokenStream {
     quote! {
         impl std::fmt::Display for #name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -683,23 +827,6 @@ fn gen_display_impl(name: &Ident, body: TokenStream) -> TokenStream {
             }
         }
     }
-}
-
-fn gen_multi_ctors<'a>(iter: impl Iterator<Item = &'a MultiConstructor<'a>>) -> TokenStream {
-    iter.map(|MultiConstructor { name, variants }| {
-        let variants = variants
-            .iter()
-            .map(
-                |CtorEnumVariant {
-                     inner: EnumVariant { enum_def_line, .. },
-                     ..
-                 }| enum_def_line,
-            )
-            .cloned()
-            .collect::<TokenStream>();
-        quote! { enum #name { #variants } }
-    })
-    .collect()
 }
 
 fn instruction_ident() -> Ident {
@@ -718,17 +845,19 @@ fn gen_from_endian_bytes(endian: Endian) -> Ident {
     format_ident!("from_{endian}_bytes")
 }
 
-fn gen_tok_read(
+fn gen_tok_disasm(
     TokenFieldData {
-        name,
+        qualified_name,
         field:
             TokenField {
                 token_size,
                 endian,
                 low,
                 high,
+                ..
             },
         inner_int_type,
+        ..
     }: &TokenFieldData,
 ) -> TokenStream {
     let from_endian_bytes = gen_from_endian_bytes(*endian);
@@ -736,8 +865,8 @@ fn gen_tok_read(
     let low = Literal::u8_unsuffixed(*low);
     let high = Literal::u8_unsuffixed(*high);
     quote! {
-        impl #name {
-            fn read(bytes: &[u8]) -> Option<Self> {
+        impl #qualified_name {
+            fn disasm(bytes: &[u8]) -> Option<Self> {
                 let bytes = bytes.get(..#token_size)?;
                 let bytes: [u8; #token_size] = bytes.try_into().ok()?;
                 let tok = #inner_int_type::#from_endian_bytes(bytes);
@@ -814,8 +943,8 @@ impl PExpression {
 }
 
 impl TokenFieldData {
-    fn gen_call_read(&self, input: &TokenStream) -> TokenStream {
-        let Self { name, .. } = self;
-        quote! { #name::read(#input)? }
+    fn gen_call_disasm(&self, input: &TokenStream) -> TokenStream {
+        let Self { qualified_name, .. } = self;
+        quote! { #qualified_name::disasm(#input)? }
     }
 }

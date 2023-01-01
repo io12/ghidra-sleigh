@@ -8,8 +8,9 @@ pub struct OffAndSize {
     size: u64,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct TokenField {
+    pub parent_name: String,
     pub token_size: u8,
     pub endian: Endian,
     pub low: u8,
@@ -134,6 +135,7 @@ impl SleighContext {
                             ret.symbols.insert(
                                 field.name.to_owned(),
                                 SymbolData::Value(TokenField {
+                                    parent_name: name.to_owned(),
                                     token_size: *size,
                                     endian: endian.unwrap_or(ret.endian),
                                     low: field.low,
@@ -298,6 +300,7 @@ impl SleighContext {
 
     fn compute_token_symbol(&self, symbol: &str, input: &[u8]) -> u8 {
         if let Some(SymbolData::Value(TokenField {
+            parent_name: _,
             token_size: _,
             endian: _,
             low,
@@ -418,6 +421,7 @@ impl SleighContext {
                 }
             }
             Some(SymbolData::Value(TokenField {
+                parent_name: _,
                 token_size: _,
                 endian: _,
                 low,
