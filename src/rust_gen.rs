@@ -934,15 +934,15 @@ fn gen_tok_disasm(
 ) -> TokenStream {
     let from_endian_bytes = gen_from_endian_bytes(*endian);
     let token_size = Literal::u8_unsuffixed(*token_size);
-    let low = Literal::u8_unsuffixed(*low);
-    let high = Literal::u8_unsuffixed(*high);
+    let low = *low as u64;
+    let high = *high as u64;
     quote! {
         impl #qualified_name {
             fn disasm(bytes: &[u8]) -> Option<Self> {
                 let bytes = bytes.get(..#token_size)?;
                 let bytes: [u8; #token_size] = bytes.try_into().ok()?;
                 let tok = #inner_int_type::#from_endian_bytes(bytes);
-                let mask = (((1 << (#high + 1)) - 1) - ((1 << #low) - 1));
+                let mask = (((1 << (#high + 1)) - 1) - ((1 << #low) - 1)) as #inner_int_type;
                 let out = (tok & mask) >> #low;
                 Some(Self(out))
             }
