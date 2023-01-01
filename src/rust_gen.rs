@@ -6,8 +6,6 @@ use crate::ast::ConstraintCompare;
 use crate::ast::ConstraintCompareOp;
 use crate::ast::Constructor;
 use crate::ast::DisplayToken;
-use crate::ast::EllEq;
-use crate::ast::EllRt;
 use crate::ast::Endian;
 use crate::ast::PExpression;
 use crate::ast::PExpressionBin;
@@ -368,9 +366,9 @@ impl<'a> RustCodeGenerator<'a> {
             .or_else(|| self.lookup_subtable(symbol).map(LiveSymbol::Subtable))
     }
 
-    fn token_to_live_symbol(&'a self, tok: &'a DisplayToken) -> Option<LiveSymbol<'a>> {
+    fn token_to_live_symbol(&'a self, tok: &'a DisplayToken) -> Option<(&'a str, LiveSymbol<'a>)> {
         match tok {
-            DisplayToken::Symbol(s) => self.lookup_live_symbol(s),
+            DisplayToken::Symbol(s) => self.lookup_live_symbol(s).map(|sym| (s.as_str(), sym)),
             _ => None,
         }
     }
@@ -378,14 +376,14 @@ impl<'a> RustCodeGenerator<'a> {
     fn iter_live_symbols(
         &'a self,
         toks: &'a [DisplayToken],
-    ) -> impl Iterator<Item = LiveSymbol<'a>> + 'a {
+    ) -> impl Iterator<Item = (&'a str, LiveSymbol<'a>)> + 'a {
         toks.iter().filter_map(|tok| self.token_to_live_symbol(tok))
     }
 
     fn gen_tuple_type(&self, toks: &[DisplayToken]) -> TokenStream {
         let types = self
             .iter_live_symbols(toks)
-            .map(|s| s.to_type())
+            .map(|s| s.1.to_type())
             .collect::<Vec<TokenStream>>();
         gen_tuple(&types)
     }
@@ -684,34 +682,19 @@ impl<'a> RustCodeGenerator<'a> {
             type_data: OffAndSize { off, .. },
         }: &PatternEquation<OffAndSize>,
     ) -> TokenStream {
-        let off = Literal::u64_unsuffixed(*off);
         match inner {
-            PatternEquationInner::EllEq(ell_eq) => {
-                let EllEq {
-                    ellipsis_left: _,
-                    ell_rt:
-                        EllRt {
-                            atomic,
-                            ellipsis_right: _,
-                        },
-                } = &**ell_eq;
-                match atomic {
-                    Atomic::Constraint(Constraint::Compare(ConstraintCompare {
-                        op,
-                        symbol,
-                        expr,
-                    })) => {
-                        let op = op.gen();
-                        let token = self.token_fields.get(symbol.as_str()).unwrap();
-                        let expr = expr.gen();
-                        let input = quote! { input.get(#off..)? };
-                        let token_disasm = token.gen_call_disasm(&input);
-                        quote! { (#token_disasm.0 #op #expr) }
-                    }
-                    Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
-                    Atomic::Parenthesized(p) => self.gen_check_pattern(input, p),
+            PatternEquationInner::EllEq(ell_eq) => match &ell_eq.ell_rt.atomic {
+                Atomic::Constraint(Constraint::Compare(ConstraintCompare { op, symbol, expr })) => {
+                    let op = op.gen();
+                    let token = self.token_fields.get(symbol.as_str()).unwrap();
+                    let expr = expr.gen();
+                    let input = gen_input_slice(input, *off);
+                    let token_disasm = token.gen_call_disasm(&input);
+                    quote! { (#token_disasm.0 #op #expr) }
                 }
-            }
+                Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
+                Atomic::Parenthesized(p) => self.gen_check_pattern(input, p),
+            },
             PatternEquationInner::Bin(bin) => {
                 let PatternEquationBin { op, l, r } = &**bin;
                 let l = self.gen_check_pattern(input, l);
@@ -734,7 +717,11 @@ impl<'a> RustCodeGenerator<'a> {
     ) -> TokenStream {
         let construct_args = self
             .iter_live_symbols(&ctor.display.toks)
-            .map(|s| s.gen_call_disasm(input))
+            .map(|(sym_str, sym_live)| {
+                let off = ctor.p_equation.find_offset(sym_str).unwrap();
+                let input = gen_input_slice(input, off);
+                sym_live.gen_call_disasm(&input)
+            })
             .collect::<Vec<TokenStream>>();
         let construct_args = gen_tuple(&construct_args);
         quote!(#name #construct_args)
@@ -932,6 +919,11 @@ fn gen_tok_disasm(
     }
 }
 
+fn gen_input_slice(input: &TokenStream, off: u64) -> TokenStream {
+    let off = Literal::u64_unsuffixed(off);
+    quote!(#input.get(#off..)?)
+}
+
 impl ConstraintCompareOp {
     fn gen(self) -> TokenStream {
         use ConstraintCompareOp::*;
@@ -995,6 +987,31 @@ impl PExpression {
                 let operand = operand.gen();
                 quote!((#op #operand))
             }
+        }
+    }
+}
+
+impl PatternEquation<OffAndSize> {
+    fn find_offset(&self, target_symbol: &str) -> Option<u64> {
+        let Self { inner, type_data } = self;
+        match inner {
+            PatternEquationInner::EllEq(ell_eq) => match &ell_eq.ell_rt.atomic {
+                Atomic::Constraint(constraint) => match constraint {
+                    Constraint::Compare(_) => None,
+                    Constraint::Symbol(s) => {
+                        if s == target_symbol {
+                            Some(type_data.off)
+                        } else {
+                            None
+                        }
+                    }
+                },
+                Atomic::Parenthesized(p) => p.find_offset(target_symbol),
+            },
+            PatternEquationInner::Bin(bin) => bin
+                .l
+                .find_offset(target_symbol)
+                .or_else(|| bin.r.find_offset(target_symbol)),
         }
     }
 }
