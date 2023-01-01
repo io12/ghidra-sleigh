@@ -684,6 +684,7 @@ impl<'a> RustCodeGenerator<'a> {
             type_data: OffAndSize { off, .. },
         }: &PatternEquation<OffAndSize>,
     ) -> TokenStream {
+        let off = Literal::u64_unsuffixed(*off);
         match inner {
             PatternEquationInner::EllEq(ell_eq) => {
                 let EllEq {
@@ -705,7 +706,7 @@ impl<'a> RustCodeGenerator<'a> {
                         let expr = expr.gen();
                         let input = quote! { input.get(#off..)? };
                         let token_disasm = token.gen_call_disasm(&input);
-                        quote! { (#token_disasm #op #expr) }
+                        quote! { (#token_disasm.0 #op #expr) }
                     }
                     Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
                     Atomic::Parenthesized(p) => self.gen_check_pattern(input, p),
@@ -725,22 +726,32 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
+    fn gen_disasm_ctor(
+        &self,
+        name: &TokenStream,
+        input: &TokenStream,
+        ctor: &Constructor<OffAndSize>,
+    ) -> TokenStream {
+        let construct_args = self
+            .iter_live_symbols(&ctor.display.toks)
+            .map(|s| s.gen_call_disasm(input))
+            .collect::<Vec<TokenStream>>();
+        let construct_args = gen_tuple(&construct_args);
+        quote!(#name #construct_args)
+    }
+
     fn gen_non_root_sing_ctor_disasm(
         &self,
         NonRootSingletonConstructor { name, ctor, .. }: &NonRootSingletonConstructor,
     ) -> TokenStream {
         let input = quote!(input);
         let check_pattern = self.gen_check_pattern(&input, &ctor.p_equation);
-        let construct_args = self
-            .iter_live_symbols(&ctor.display.toks)
-            .map(|s| s.gen_call_disasm(&input))
-            .collect::<Vec<TokenStream>>();
-        let construct_args = gen_tuple(&construct_args);
+        let disasm_ctor = self.gen_disasm_ctor(&quote!(#name), &input, ctor);
         quote! {
             impl #name {
                 fn disasm(input: &[u8]) -> Option<Self> {
                     if #check_pattern {
-                        Some(#name #construct_args)
+                        Some(#disasm_ctor)
                     } else {
                         None
                     }
@@ -756,12 +767,55 @@ impl<'a> RustCodeGenerator<'a> {
             .collect()
     }
 
+    fn gen_non_root_mult_ctor_disasm(
+        &self,
+        MultiConstructor { name, variants }: &MultiConstructor,
+    ) -> TokenStream {
+        let checks = variants
+            .iter()
+            .map(
+                |CtorEnumVariant {
+                     ctor,
+                     inner: EnumVariant { qualified_name, .. },
+                 }| {
+                    let check_pattern = self.gen_check_pattern(&quote!(input), &ctor.p_equation);
+                    let disasm_ctor = self.gen_disasm_ctor(qualified_name, &quote!(input), ctor);
+                    quote! {
+                        if #check_pattern {
+                            Some(#disasm_ctor)
+                        } else
+                    }
+                },
+            )
+            .collect::<TokenStream>();
+        quote! {
+            impl #name {
+                fn disasm(input: &[u8]) -> Option<Self> {
+                    if false {
+                        unreachable!()
+                    } else #checks {
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    fn gen_non_root_mult_ctor_disasms(&self) -> TokenStream {
+        self.non_root_mult_ctors
+            .values()
+            .map(|c| self.gen_non_root_mult_ctor_disasm(c))
+            .collect()
+    }
+
     fn gen_disasm(&self) -> TokenStream {
         let tok_reads = self.gen_tok_disasms();
         let non_root_sing_ctor_disasms = self.gen_non_root_sing_ctor_disasms();
+        let non_root_mult_ctor_disasms = self.gen_non_root_mult_ctor_disasms();
         quote! {
             #tok_reads
             #non_root_sing_ctor_disasms
+            #non_root_mult_ctor_disasms
         }
     }
 
@@ -923,7 +977,10 @@ impl PExpression {
     fn gen(&self) -> TokenStream {
         use PExpression::*;
         match self {
-            ConstantValue(x) => quote!(#x),
+            ConstantValue(x) => {
+                let x = Literal::u64_unsuffixed(*x);
+                quote!(#x)
+            }
             Symbol(_) => todo!(),
             Bin(bin) => {
                 let PExpressionBin { op, l, r } = &**bin;
