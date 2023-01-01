@@ -4,15 +4,16 @@ use crate::ast::*;
 
 #[derive(Debug, Copy, Clone)]
 pub struct OffAndSize {
-    off: u64,
+    pub off: u64,
     size: u64,
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct TokenField {
     pub token_size: u8,
-    low: u8,
-    high: u8,
+    pub endian: Endian,
+    pub low: u8,
+    pub high: u8,
 }
 
 pub enum SymbolData {
@@ -97,7 +98,7 @@ pub struct SleighContext {
 impl SleighContext {
     fn lookup_symbol_size(&self, symbol: &str) -> Option<u64> {
         match self.symbols.get(symbol)? {
-            SymbolData::Subtable(c) => Some(c.get(0)?.p_equation.token.size),
+            SymbolData::Subtable(c) => Some(c.get(0)?.p_equation.type_data.size),
             SymbolData::Value(token_field) => Some(token_field.token_size.into()),
             SymbolData::VarNode(off_size) => Some(off_size.size),
             _ => None,
@@ -125,7 +126,7 @@ impl SleighContext {
                     Definition::TokenDef(TokenDef {
                         name,
                         size,
-                        endian: _,
+                        endian,
                         fields,
                     }) => {
                         ret.symbols.insert(name.to_owned(), SymbolData::Token);
@@ -134,6 +135,7 @@ impl SleighContext {
                                 field.name.to_owned(),
                                 SymbolData::Value(TokenField {
                                     token_size: *size,
+                                    endian: endian.unwrap_or(ret.endian),
                                     low: field.low,
                                     high: field.high,
                                 }),
@@ -213,7 +215,10 @@ impl SleighContext {
 
     fn type_pattern(
         &mut self,
-        PatternEquation { inner, token: () }: &PatternEquation<()>,
+        PatternEquation {
+            inner,
+            type_data: (),
+        }: &PatternEquation<()>,
         off: u64,
     ) -> PatternEquation<OffAndSize> {
         match inner {
@@ -241,7 +246,7 @@ impl SleighContext {
                                     ellipsis_right,
                                 },
                             })),
-                            token: OffAndSize {
+                            type_data: OffAndSize {
                                 off,
                                 size: { self.lookup_symbol_size(symbol).unwrap() },
                             },
@@ -256,10 +261,10 @@ impl SleighContext {
                     PatternEquationBinOp::And | PatternEquationBinOp::Or => {
                         let l = self.type_pattern(l, off);
                         let r = self.type_pattern(r, off);
-                        assert_eq!(l.token.off, r.token.off);
-                        let token = OffAndSize {
-                            off: l.token.off,
-                            size: u64::max(l.token.size, r.token.size),
+                        assert_eq!(l.type_data.off, r.type_data.off);
+                        let type_data = OffAndSize {
+                            off: l.type_data.off,
+                            size: u64::max(l.type_data.size, r.type_data.size),
                         };
                         PatternEquation {
                             inner: PatternEquationInner::Bin(Box::new(PatternEquationBin {
@@ -267,23 +272,23 @@ impl SleighContext {
                                 l,
                                 r,
                             })),
-                            token,
+                            type_data,
                         }
                     }
                     PatternEquationBinOp::Cat => {
                         let l = self.type_pattern(l, off);
-                        let mid = l.token.off + l.token.size;
+                        let mid = l.type_data.off + l.type_data.size;
                         let r = self.type_pattern(r, mid);
-                        assert_eq!(mid, r.token.off);
-                        let off = l.token.off;
-                        let size = l.token.size + r.token.size;
+                        assert_eq!(mid, r.type_data.off);
+                        let off = l.type_data.off;
+                        let size = l.type_data.size + r.type_data.size;
                         PatternEquation {
                             inner: PatternEquationInner::Bin(Box::new(PatternEquationBin {
                                 op: op.clone(),
                                 l,
                                 r,
                             })),
-                            token: OffAndSize { off, size },
+                            type_data: OffAndSize { off, size },
                         }
                     }
                 }
@@ -294,6 +299,7 @@ impl SleighContext {
     fn compute_token_symbol(&self, symbol: &str, input: &[u8]) -> u8 {
         if let Some(SymbolData::Value(TokenField {
             token_size: _,
+            endian: _,
             low,
             high,
         })) = self.symbols.get(symbol)
@@ -337,10 +343,10 @@ impl SleighContext {
 
     fn check_p_equation(
         &self,
-        PatternEquation { inner, token }: &PatternEquation<OffAndSize>,
+        PatternEquation { inner, type_data }: &PatternEquation<OffAndSize>,
         input: &[u8],
     ) -> bool {
-        let input = input.get(token.off as usize..).unwrap();
+        let input = input.get(type_data.off as usize..).unwrap();
         match inner {
             PatternEquationInner::EllEq(ell_eq) => {
                 let EllEq {
@@ -413,6 +419,7 @@ impl SleighContext {
             }
             Some(SymbolData::Value(TokenField {
                 token_size: _,
+                endian: _,
                 low,
                 high,
             })) => {
@@ -439,7 +446,7 @@ fn compute_bit_range(b: u8, low: u8, high: u8) -> u8 {
 }
 
 fn p_equation_symm_off(
-    PatternEquation { inner, token }: &PatternEquation<OffAndSize>,
+    PatternEquation { inner, type_data }: &PatternEquation<OffAndSize>,
     target_symbol: &str,
 ) -> Option<OffAndSize> {
     match inner {
@@ -461,7 +468,7 @@ fn p_equation_symm_off(
                     })
                     | Constraint::Symbol(symbol) => {
                         if symbol == target_symbol {
-                            Some(*token)
+                            Some(*type_data)
                         } else {
                             None
                         }

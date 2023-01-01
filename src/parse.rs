@@ -618,7 +618,7 @@ fn parse_ellipsis(input: &str) -> IResult<&str, bool> {
 fn parse_pattern_equation_ell_eq(input: &str) -> IResult<&str, PatternEquation<()>> {
     map(parse_ell_eq, |e| PatternEquation {
         inner: PatternEquationInner::EllEq(Box::new(e)),
-        token: (),
+        type_data: (),
     })(input)
 }
 
@@ -627,7 +627,7 @@ fn parse_pattern_equation(input: &str) -> IResult<&str, PatternEquation<()>> {
         &parse_pattern_equation_ell_eq,
         &|op, l, r| PatternEquation {
             inner: PatternEquationInner::Bin(Box::new(PatternEquationBin { op, l, r })),
-            token: (),
+            type_data: (),
         },
         0,
         &OpTable::new(&[

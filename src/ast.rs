@@ -192,7 +192,7 @@ pub enum PatternEquationInner<T> {
 #[derive(Debug, Clone)]
 pub struct PatternEquation<T> {
     pub inner: PatternEquationInner<T>,
-    pub token: T,
+    pub type_data: T,
 }
 
 #[derive(Debug, Clone)]
@@ -213,7 +213,7 @@ pub enum Atomic<T> {
     Parenthesized(PatternEquation<T>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum ConstraintCompareOp {
     Equal,
     NotEqual,
@@ -236,7 +236,7 @@ pub enum Constraint {
     Symbol(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum PExpressionBinOp {
     Add,
     Sub,
@@ -256,7 +256,7 @@ pub struct PExpressionBin {
     pub r: PExpression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum PExpressionUnaryOp {
     Minus,
     Not,
