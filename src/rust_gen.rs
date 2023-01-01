@@ -263,10 +263,7 @@ fn make_non_root_multi_ctors(ctx: &SleighContext) -> BTreeMap<&str, MultiConstru
         .collect()
 }
 
-fn make_mnemonic_enums<'a>(
-    ctx: &'a SleighContext,
-    root_table: &RootTable<'a>,
-) -> Vec<MultiConstructor<'a>> {
+fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor<'a>> {
     root_table
         .iter()
         .filter(|(_, ctors)| ctors.len() > 1)
@@ -294,27 +291,20 @@ fn make_mnemonic_enums<'a>(
         .collect()
 }
 
-fn make_instruction_enum<'a>(
-    ctx: &'a SleighContext,
-    root_table: &RootTable<'a>,
-) -> Vec<InstructionEnumVariant<'a>> {
+fn make_instruction_enum<'a>(root_table: &RootTable<'a>) -> Vec<InstructionEnumVariant<'a>> {
     root_table
         .iter()
         .map(|(mnemonic, constructors)| {
             let qualified_name = quote!(Instruction::#mnemonic);
             match constructors.as_slice() {
                 [] => unimplemented!(),
-                [ctor] => {
-                    let toks = &ctor.display.toks;
-                    let doc = ctor.display.to_string();
-                    InstructionEnumVariant::Unique(CtorEnumVariant {
-                        ctor,
-                        inner: EnumVariant {
-                            name: mnemonic.clone(),
-                            qualified_name,
-                        },
-                    })
-                }
+                [ctor] => InstructionEnumVariant::Unique(CtorEnumVariant {
+                    ctor,
+                    inner: EnumVariant {
+                        name: mnemonic.clone(),
+                        qualified_name,
+                    },
+                }),
                 _ => InstructionEnumVariant::Duplicate(EnumVariant {
                     name: mnemonic.clone(),
                     qualified_name,
@@ -331,8 +321,8 @@ impl<'a> RustCodeGenerator<'a> {
         let non_root_sing_ctors = make_non_root_sing_ctors(ctx);
         let non_root_mult_ctors = make_non_root_multi_ctors(ctx);
         let root_table = make_root_table(ctx);
-        let mnemonic_enums = make_mnemonic_enums(ctx, &root_table);
-        let instruction_enum = make_instruction_enum(ctx, &root_table);
+        let mnemonic_enums = make_mnemonic_enums(&root_table);
+        let instruction_enum = make_instruction_enum(&root_table);
 
         Self {
             ctx,
