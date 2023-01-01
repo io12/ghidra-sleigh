@@ -744,7 +744,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect()
     }
 
-    fn gen_non_root_mult_ctor_disasm(
+    fn gen_mult_ctor_disasm(
         &self,
         MultiConstructor { name, variants }: &MultiConstructor,
     ) -> TokenStream {
@@ -778,21 +778,22 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
-    fn gen_non_root_mult_ctor_disasms(&self) -> TokenStream {
+    fn gen_mult_ctor_disasms(&self) -> TokenStream {
         self.non_root_mult_ctors
             .values()
-            .map(|c| self.gen_non_root_mult_ctor_disasm(c))
+            .chain(self.mnemonic_enums.iter())
+            .map(|c| self.gen_mult_ctor_disasm(c))
             .collect()
     }
 
     fn gen_disasm(&self) -> TokenStream {
         let tok_reads = self.gen_tok_disasms();
         let non_root_sing_ctor_disasms = self.gen_non_root_sing_ctor_disasms();
-        let non_root_mult_ctor_disasms = self.gen_non_root_mult_ctor_disasms();
+        let mult_ctor_disasms = self.gen_mult_ctor_disasms();
         quote! {
             #tok_reads
             #non_root_sing_ctor_disasms
-            #non_root_mult_ctor_disasms
+            #mult_ctor_disasms
         }
     }
 
