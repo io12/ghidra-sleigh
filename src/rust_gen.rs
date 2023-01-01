@@ -786,14 +786,54 @@ impl<'a> RustCodeGenerator<'a> {
             .collect()
     }
 
+    fn gen_insn_enum_disasm(&self) -> TokenStream {
+        let checks = self
+            .instruction_enum
+            .iter()
+            .map(|variant| {
+                let (check_pattern, disasm_ctor) = match variant {
+                    InstructionEnumVariant::Duplicate(EnumVariant {
+                        name,
+                        qualified_name,
+                    }) => {
+                        let disasm = quote!(#name::disasm(input));
+                        (quote!(#disasm.is_some()), quote!(#qualified_name(#disasm?)))
+                    }
+                    InstructionEnumVariant::Unique(CtorEnumVariant { ctor, inner }) => (
+                        self.gen_check_pattern(&quote!(input), &ctor.p_equation),
+                        self.gen_disasm_ctor(&inner.qualified_name, &quote!(input), ctor),
+                    ),
+                };
+                quote! {
+                    if #check_pattern {
+                        Some(#disasm_ctor)
+                    } else
+                }
+            })
+            .collect::<TokenStream>();
+        quote! {
+            impl Instruction {
+                fn disasm(input: &[u8]) -> Option<Self> {
+                    if false {
+                        unreachable!()
+                    } else #checks {
+                        None
+                    }
+                }
+            }
+        }
+    }
+
     fn gen_disasm(&self) -> TokenStream {
         let tok_reads = self.gen_tok_disasms();
         let non_root_sing_ctor_disasms = self.gen_non_root_sing_ctor_disasms();
         let mult_ctor_disasms = self.gen_mult_ctor_disasms();
+        let insn_enum_disasm = self.gen_insn_enum_disasm();
         quote! {
             #tok_reads
             #non_root_sing_ctor_disasms
             #mult_ctor_disasms
+            #insn_enum_disasm
         }
     }
 
