@@ -11,7 +11,10 @@ fn fuzz() {
                     .as_slice()
                 {
                     [] => None,
-                    [insn, ..] => Some(insn.as_str().trim().to_owned()),
+                    [insn, ..] => {
+                        let insn = insn.as_str().trim().replace('$', "");
+                        Some(insn)
+                    }
                 };
                 let actual = sleigh_6502::Instruction::disasm(&input, start_addr)
                     .map(|insn| insn.to_string());
