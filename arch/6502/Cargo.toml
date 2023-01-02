@@ -10,3 +10,6 @@ sleigh-types = { path = "../../types" }
 sleigh-generator = { path = "../../generator" }
 prettyplease = "0.1.22"
 syn = "1.0.107"
+
+[dev-dependencies]
+disasm6502 = "0.2.2"

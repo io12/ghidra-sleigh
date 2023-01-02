@@ -12,6 +12,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "disasm6502"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8aa824a2f615f75304729079c4c888346507e9bd49354bf0c17f15cb2ba889d"
+
+[[package]]
 name = "heck"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -94,6 +100,7 @@ checksum = "456c603be3e8d448b072f410900c09faf164fbce2d480456f50eea6e25f9c848"
 name = "sleigh-6502"
 version = "0.1.0"
 dependencies = [
+ "disasm6502",
  "prettyplease",
  "sleigh-generator",
  "sleigh-parser",
