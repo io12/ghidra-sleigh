@@ -1,5 +1,6 @@
 [workspace]
 members = [
-    "sleigh-parser",
-    "sleigh-generator",
+    "types",
+    "parser",
+    "generator",
 ]

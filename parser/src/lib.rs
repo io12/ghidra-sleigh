@@ -1,4 +1,3 @@
-use crate::ast::*;
 use lazy_static::lazy_static;
 use nom::{
     branch::alt,
@@ -12,6 +11,7 @@ use nom::{
     IResult,
 };
 use regex::Regex;
+use sleigh_types::ast::*;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,

@@ -87,7 +87,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "sleigh-parser",
+ "sleigh-types",
 ]
 
 [[package]]
@@ -97,7 +97,12 @@ dependencies = [
  "lazy_static",
  "nom",
  "regex",
+ "sleigh-types",
 ]
+
+[[package]]
+name = "sleigh-types"
+version = "0.1.0"
 
 [[package]]
 name = "unicode-ident"

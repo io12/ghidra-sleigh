@@ -1,33 +1,17 @@
 use std::collections::BTreeMap;
 
-use sleigh_parser::ast::Atomic;
-use sleigh_parser::ast::Constraint;
-use sleigh_parser::ast::ConstraintCompare;
-use sleigh_parser::ast::ConstraintCompareOp;
-use sleigh_parser::ast::Constructor;
-use sleigh_parser::ast::ContextListItem;
-use sleigh_parser::ast::DisplayToken;
-use sleigh_parser::ast::Endian;
-use sleigh_parser::ast::PExpression;
-use sleigh_parser::ast::PExpressionBin;
-use sleigh_parser::ast::PExpressionBinOp;
-use sleigh_parser::ast::PExpressionUnary;
-use sleigh_parser::ast::PExpressionUnaryOp;
-use sleigh_parser::ast::PatternEquation;
-use sleigh_parser::ast::PatternEquationBin;
-use sleigh_parser::ast::PatternEquationBinOp;
-use sleigh_parser::ast::PatternEquationInner;
-use sleigh_parser::ast::INSTRUCTION;
-use sleigh_parser::context::OffAndSize;
-use sleigh_parser::context::SleighContext;
-use sleigh_parser::context::SymbolData;
-use sleigh_parser::context::TokenField;
+use sleigh_types::{
+    ast::{
+        Atomic, Constraint, ConstraintCompare, ConstraintCompareOp, Constructor, ContextListItem,
+        DisplayToken, Endian, PExpression, PExpressionBin, PExpressionBinOp, PExpressionUnary,
+        PExpressionUnaryOp, PatternEquation, PatternEquationBin, PatternEquationBinOp,
+        PatternEquationInner, INSTRUCTION,
+    },
+    context::{OffAndSize, SleighContext, SymbolData, TokenField},
+};
 
-use proc_macro2::Ident;
-use proc_macro2::Literal;
-use proc_macro2::TokenStream;
-use quote::ToTokens;
-use quote::{format_ident, quote};
+use proc_macro2::{Ident, Literal, TokenStream};
+use quote::{format_ident, quote, ToTokens};
 
 type RootTable<'a> = BTreeMap<Ident, Vec<&'a Constructor<OffAndSize>>>;
 
