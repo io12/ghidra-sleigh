@@ -12,8 +12,12 @@ fn fuzz() {
                 {
                     [] => None,
                     [insn, ..] => {
-                        let insn = insn.as_str().trim().replace('$', "");
-                        Some(insn)
+                        if insn.illegal {
+                            None
+                        } else {
+                            let insn = insn.as_str().trim().replace('$', "");
+                            Some(insn)
+                        }
                     }
                 };
                 let actual = sleigh_6502::Instruction::disasm(&input, start_addr)
