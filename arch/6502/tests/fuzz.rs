@@ -18,7 +18,7 @@ fn fuzz() {
                 };
                 let actual = sleigh_6502::Instruction::disasm(&input, start_addr)
                     .map(|insn| insn.to_string());
-                assert_eq!(expected, actual);
+                assert_eq!(expected, actual, "input was {input:02X?}");
             }
         }
     }
