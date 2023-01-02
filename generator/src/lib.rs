@@ -558,8 +558,10 @@ impl<'a> RustCodeGenerator<'a> {
     fn gen_token_types_display_impl(&self) -> TokenStream {
         self.token_fields
             .values()
-            .map(|TokenFieldData { qualified_name, .. }| {
-                gen_display_impl(qualified_name, quote! { write!(f, "{}", self.0) })
+            .map(|data| {
+                let num_digits = data.field.token_size * 2;
+                let fmt = format!("{{:0{num_digits}X}}");
+                gen_display_impl(&data.qualified_name, quote!(write!(f, #fmt, self.0)))
             })
             .collect()
     }
