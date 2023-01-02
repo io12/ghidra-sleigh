@@ -1112,7 +1112,7 @@ impl PExpression {
                         .unwrap()
                         .gen_call_disasm(input);
                     let int_type = generator.gen_addr_int_type();
-                    quote!((#parsed_tok.0 as #int_type))
+                    quote!(#int_type::from(#parsed_tok.0))
                 }
                 SymbolData::End => addr.to_owned(),
                 _ => panic!(),
