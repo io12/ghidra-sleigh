@@ -3,4 +3,5 @@ members = [
     "types",
     "parser",
     "generator",
+    "arch/6502",
 ]

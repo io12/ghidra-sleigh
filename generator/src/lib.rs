@@ -436,12 +436,13 @@ impl<'a> RustCodeGenerator<'a> {
             .filter_map(|tok| self.token_to_live_symbol(tok, ctor))
     }
 
-    fn gen_tuple_type(&self, ctor: &Constructor<OffAndSize>) -> TokenStream {
+    fn gen_tuple_type(&self, inner_pub: bool, ctor: &Constructor<OffAndSize>) -> TokenStream {
         let types = self
             .iter_live_symbols(ctor)
             .map(|s| s.1.to_type())
             .collect::<Vec<TokenStream>>();
-        gen_tuple(&types)
+        let prefix = if inner_pub { quote!(pub) } else { quote!() };
+        gen_tuple(&prefix, &types)
     }
 
     fn gen_enum_variant(
@@ -451,7 +452,7 @@ impl<'a> RustCodeGenerator<'a> {
             inner: EnumVariant { name, .. },
         }: &CtorEnumVariant,
     ) -> TokenStream {
-        let tuple_type = self.gen_tuple_type(ctor);
+        let tuple_type = self.gen_tuple_type(false, ctor);
         quote! { #name #tuple_type , }
     }
 
@@ -461,7 +462,7 @@ impl<'a> RustCodeGenerator<'a> {
                 .iter()
                 .map(|variant| self.gen_enum_variant(variant))
                 .collect::<TokenStream>();
-            quote! { enum #name { #variants } }
+            quote! { pub enum #name { #variants } }
         })
         .collect()
     }
@@ -482,12 +483,12 @@ impl<'a> RustCodeGenerator<'a> {
                     ctor,
                     inner: EnumVariant { name, .. },
                 }) => {
-                    let tuple_type = self.gen_tuple_type(ctor);
+                    let tuple_type = self.gen_tuple_type(false, ctor);
                     quote! { #name #tuple_type , }
                 }
             })
             .collect::<TokenStream>();
-        quote!(enum Instruction { #variants })
+        quote!(pub enum Instruction { #variants })
     }
 
     fn gen_token_types(&self) -> TokenStream {
@@ -506,11 +507,11 @@ impl<'a> RustCodeGenerator<'a> {
                              name,
                              inner_int_type,
                              ..
-                         }| quote! { pub(super) struct #name(pub(super) #inner_int_type); },
+                         }| quote! { pub struct #name(pub #inner_int_type); },
                     )
                     .collect::<TokenStream>();
                 quote! {
-                    mod #parent {
+                    pub mod #parent {
                         #fields
                     }
                 }
@@ -522,8 +523,8 @@ impl<'a> RustCodeGenerator<'a> {
         self.non_root_sing_ctors
             .values()
             .map(|NonRootSingletonConstructor { name, ctor, .. }| {
-                let tuple_type = self.gen_tuple_type(ctor);
-                quote! { struct #name #tuple_type ; }
+                let tuple_type = self.gen_tuple_type(true, ctor);
+                quote! { pub struct #name #tuple_type ; }
             })
             .collect()
     }
@@ -659,7 +660,7 @@ impl<'a> RustCodeGenerator<'a> {
                 quote!(#ident)
             })
             .collect::<Vec<TokenStream>>();
-        gen_tuple(&bindings)
+        gen_tuple(&quote!(), &bindings)
     }
 
     fn gen_display_write_stmts(&self, ctor: &Constructor<OffAndSize>) -> TokenStream {
@@ -822,7 +823,7 @@ impl<'a> RustCodeGenerator<'a> {
                 sym_live.gen_call_disasm(self, &input, addr)
             })
             .collect::<Vec<TokenStream>>();
-        let construct_args = gen_tuple(&construct_args);
+        let construct_args = gen_tuple(&quote!(), &construct_args);
         quote!(#name #construct_args)
     }
 
@@ -933,7 +934,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl Instruction {
-                fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
+                pub fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -998,14 +999,14 @@ fn display_to_ident(toks: &[DisplayToken]) -> Ident {
     symbol_to_type_ident(&s)
 }
 
-fn gen_tuple(values: &[TokenStream]) -> TokenStream {
+fn gen_tuple(prefix: &TokenStream, values: &[TokenStream]) -> TokenStream {
     match values {
         [] => quote!(),
         [value] => {
-            quote!((#value))
+            quote!((#prefix #value))
         }
         _ => {
-            quote!((#(#values),*))
+            quote!((#(#prefix #values),*))
         }
     }
 }
