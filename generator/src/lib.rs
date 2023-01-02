@@ -559,9 +559,8 @@ impl<'a> RustCodeGenerator<'a> {
         self.token_fields
             .values()
             .map(|data| {
-                let num_digits = data.field.token_size * 2;
-                let fmt = format!("{{:0{num_digits}X}}");
-                gen_display_impl(&data.qualified_name, quote!(write!(f, #fmt, self.0)))
+                let write = gen_int_write(data.field.token_size, quote!(self.0));
+                gen_display_impl(&data.qualified_name, write)
             })
             .collect()
     }
@@ -641,7 +640,7 @@ impl<'a> RustCodeGenerator<'a> {
     fn iter_display_tok_fields(
         &'a self,
         ctor: &'a Constructor<OffAndSize>,
-    ) -> impl Iterator<Item = (Option<usize>, &'a DisplayToken)> {
+    ) -> impl Iterator<Item = (Option<(usize, LiveSymbol)>, &'a DisplayToken)> {
         let toks = &ctor.display.toks;
 
         // Skip first token if it's a space
@@ -650,15 +649,15 @@ impl<'a> RustCodeGenerator<'a> {
             toks => toks,
         };
 
-        toks.iter().scan(0, |state, tok| {
-            if self.token_to_live_symbol(tok, ctor).is_some() {
-                let i = *state;
-                *state += 1;
-                Some((Some(i), tok))
-            } else {
-                Some((None, tok))
-            }
-        })
+        toks.iter()
+            .scan(0, |state, tok| match self.token_to_live_symbol(tok, ctor) {
+                Some((_, live_symbol)) => {
+                    let i = *state;
+                    *state += 1;
+                    Some((Some((i, live_symbol)), tok))
+                }
+                None => Some((None, tok)),
+            })
     }
 
     fn gen_tuple_destruct(&self, ctor: &Constructor<OffAndSize>) -> TokenStream {
@@ -682,9 +681,18 @@ impl<'a> RustCodeGenerator<'a> {
                 }
                 (None, DisplayToken::Char(c)) => quote! { f.write_char(#c)?; },
                 (None, DisplayToken::Space) => quote! { f.write_char(' ')?; },
-                (Some(i), DisplayToken::Symbol(_)) => {
+                (
+                    Some((i, LiveSymbol::Subtable(_) | LiveSymbol::Value(_))),
+                    DisplayToken::Symbol(_),
+                ) => {
                     let var = format_ident!("_{i}");
                     quote! { write!(f, "{}", #var)?; }
+                }
+                (Some((i, LiveSymbol::ContextBlockItem(ctx_block))), DisplayToken::Symbol(_)) => {
+                    let var = format_ident!("_{i}");
+                    let var = quote!(#var);
+                    let write = gen_int_write(ctx_block.size, var);
+                    quote! { #write?; }
                 }
                 (Some(_), _) => unreachable!(),
             })
@@ -1084,6 +1092,12 @@ fn gen_tok_disasm(
 fn gen_input_slice(input: &TokenStream, off: u64) -> TokenStream {
     let off = Literal::u64_unsuffixed(off);
     quote!(#input.get(#off..)?)
+}
+
+fn gen_int_write(size_in_bytes: u8, expr: TokenStream) -> TokenStream {
+    let num_digits = size_in_bytes * 2;
+    let fmt = format!("{{:0{num_digits}X}}");
+    quote!(write!(f, #fmt, #expr))
 }
 
 trait Generate {
