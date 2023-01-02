@@ -640,7 +640,15 @@ impl<'a> RustCodeGenerator<'a> {
         &'a self,
         ctor: &'a Constructor<OffAndSize>,
     ) -> impl Iterator<Item = (Option<usize>, &'a DisplayToken)> {
-        ctor.display.toks.iter().scan(0, |state, tok| {
+        let toks = &ctor.display.toks;
+
+        // Skip first token if it's a space
+        let toks = match toks.as_slice() {
+            [DisplayToken::Space, rest @ ..] => rest,
+            toks => toks,
+        };
+
+        toks.iter().scan(0, |state, tok| {
             if self.token_to_live_symbol(tok, ctor).is_some() {
                 let i = *state;
                 *state += 1;
