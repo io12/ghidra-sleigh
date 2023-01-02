@@ -1,13 +1,5 @@
-[package]
-name = "ghidra-sleigh"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-heck = "0.4.0"
-lazy_static = "1.4.0"
-nom = "7.1.1"
-proc-macro2 = "1.0.49"
-quote = "1.0.23"
-regex = "1.7.0"
+[workspace]
+members = [
+    "sleigh-parser",
+    "sleigh-generator",
+]

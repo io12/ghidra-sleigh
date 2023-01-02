@@ -440,11 +440,6 @@ impl SleighContext {
             None => out.push_str(table_header),
         }
     }
-
-    pub fn define_rust_types(&self) -> proc_macro2::TokenStream {
-        let generator = crate::rust_gen::RustCodeGenerator::new(self);
-        generator.out()
-    }
 }
 
 fn compute_bit_range(b: u8, low: u8, high: u8) -> u8 {

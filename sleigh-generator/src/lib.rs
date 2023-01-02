@@ -1,27 +1,27 @@
 use std::collections::BTreeMap;
 
-use crate::ast::Atomic;
-use crate::ast::Constraint;
-use crate::ast::ConstraintCompare;
-use crate::ast::ConstraintCompareOp;
-use crate::ast::Constructor;
-use crate::ast::ContextListItem;
-use crate::ast::DisplayToken;
-use crate::ast::Endian;
-use crate::ast::PExpression;
-use crate::ast::PExpressionBin;
-use crate::ast::PExpressionBinOp;
-use crate::ast::PExpressionUnary;
-use crate::ast::PExpressionUnaryOp;
-use crate::ast::PatternEquation;
-use crate::ast::PatternEquationBin;
-use crate::ast::PatternEquationBinOp;
-use crate::ast::PatternEquationInner;
-use crate::ast::INSTRUCTION;
-use crate::context::OffAndSize;
-use crate::context::SleighContext;
-use crate::context::SymbolData;
-use crate::context::TokenField;
+use sleigh_parser::ast::Atomic;
+use sleigh_parser::ast::Constraint;
+use sleigh_parser::ast::ConstraintCompare;
+use sleigh_parser::ast::ConstraintCompareOp;
+use sleigh_parser::ast::Constructor;
+use sleigh_parser::ast::ContextListItem;
+use sleigh_parser::ast::DisplayToken;
+use sleigh_parser::ast::Endian;
+use sleigh_parser::ast::PExpression;
+use sleigh_parser::ast::PExpressionBin;
+use sleigh_parser::ast::PExpressionBinOp;
+use sleigh_parser::ast::PExpressionUnary;
+use sleigh_parser::ast::PExpressionUnaryOp;
+use sleigh_parser::ast::PatternEquation;
+use sleigh_parser::ast::PatternEquationBin;
+use sleigh_parser::ast::PatternEquationBinOp;
+use sleigh_parser::ast::PatternEquationInner;
+use sleigh_parser::ast::INSTRUCTION;
+use sleigh_parser::context::OffAndSize;
+use sleigh_parser::context::SleighContext;
+use sleigh_parser::context::SymbolData;
+use sleigh_parser::context::TokenField;
 
 use proc_macro2::Ident;
 use proc_macro2::Literal;
@@ -179,7 +179,7 @@ impl<'a> ContextItemSymbol<'a> {
         input: &TokenStream,
         addr: &TokenStream,
     ) -> TokenStream {
-        self.expr.gen(generator, input, addr)
+        generator.gen_p_expr(self.expr, input, addr)
     }
 }
 
@@ -742,6 +742,47 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
+    fn gen_p_expr(
+        &self,
+        expr: &PExpression,
+        input: &TokenStream,
+        addr: &TokenStream,
+    ) -> TokenStream {
+        use PExpression::*;
+        match expr {
+            ConstantValue(x) => {
+                let x = Literal::u64_unsuffixed(*x);
+                quote!(#x)
+            }
+            Symbol(s) => match self.ctx.symbols.get(s).unwrap() {
+                SymbolData::Value(_) => {
+                    let parsed_tok = self
+                        .token_fields
+                        .get(s.as_str())
+                        .unwrap()
+                        .gen_call_disasm(input);
+                    let int_type = self.gen_addr_int_type();
+                    quote!(#int_type::from(#parsed_tok.0))
+                }
+                SymbolData::End => addr.to_owned(),
+                _ => panic!(),
+            },
+            Bin(bin) => {
+                let PExpressionBin { op, l, r } = &**bin;
+                let op = op.gen();
+                let l = self.gen_p_expr(l, input, addr);
+                let r = self.gen_p_expr(r, input, addr);
+                quote!((#l #op #r))
+            }
+            Unary(unary) => {
+                let PExpressionUnary { op, operand } = &**unary;
+                let op = op.gen();
+                let operand = self.gen_p_expr(operand, input, addr);
+                quote!((#op #operand))
+            }
+        }
+    }
+
     fn gen_tok_disasms(&self) -> TokenStream {
         self.token_fields.values().map(gen_tok_disasm).collect()
     }
@@ -760,7 +801,7 @@ impl<'a> RustCodeGenerator<'a> {
                 Atomic::Constraint(Constraint::Compare(ConstraintCompare { op, symbol, expr })) => {
                     let op = op.gen();
                     let token = self.token_fields.get(symbol.as_str()).unwrap();
-                    let expr = expr.gen(self, input, addr);
+                    let expr = self.gen_p_expr(expr, input, addr);
                     let input = gen_input_slice(input, *off);
                     let token_disasm = token.gen_call_disasm(&input);
                     quote! { (#token_disasm.0 #op #expr) }
@@ -1050,7 +1091,11 @@ fn gen_input_slice(input: &TokenStream, off: u64) -> TokenStream {
     quote!(#input.get(#off..)?)
 }
 
-impl ConstraintCompareOp {
+trait Generate {
+    fn gen(self) -> TokenStream;
+}
+
+impl Generate for ConstraintCompareOp {
     fn gen(self) -> TokenStream {
         use ConstraintCompareOp::*;
         match self {
@@ -1064,7 +1109,7 @@ impl ConstraintCompareOp {
     }
 }
 
-impl PExpressionBinOp {
+impl Generate for PExpressionBinOp {
     fn gen(self) -> TokenStream {
         use PExpressionBinOp::*;
         match self {
@@ -1081,7 +1126,7 @@ impl PExpressionBinOp {
     }
 }
 
-impl PExpressionUnaryOp {
+impl Generate for PExpressionUnaryOp {
     fn gen(self) -> TokenStream {
         use PExpressionUnaryOp::*;
         match self {
@@ -1091,50 +1136,11 @@ impl PExpressionUnaryOp {
     }
 }
 
-impl PExpression {
-    fn gen(
-        &self,
-        generator: &RustCodeGenerator,
-        input: &TokenStream,
-        addr: &TokenStream,
-    ) -> TokenStream {
-        use PExpression::*;
-        match self {
-            ConstantValue(x) => {
-                let x = Literal::u64_unsuffixed(*x);
-                quote!(#x)
-            }
-            Symbol(s) => match generator.ctx.symbols.get(s).unwrap() {
-                SymbolData::Value(_) => {
-                    let parsed_tok = generator
-                        .token_fields
-                        .get(s.as_str())
-                        .unwrap()
-                        .gen_call_disasm(input);
-                    let int_type = generator.gen_addr_int_type();
-                    quote!(#int_type::from(#parsed_tok.0))
-                }
-                SymbolData::End => addr.to_owned(),
-                _ => panic!(),
-            },
-            Bin(bin) => {
-                let PExpressionBin { op, l, r } = &**bin;
-                let op = op.gen();
-                let l = l.gen(generator, input, addr);
-                let r = r.gen(generator, input, addr);
-                quote!((#l #op #r))
-            }
-            Unary(unary) => {
-                let PExpressionUnary { op, operand } = &**unary;
-                let op = op.gen();
-                let operand = operand.gen(generator, input, addr);
-                quote!((#op #operand))
-            }
-        }
-    }
+trait FindOffset {
+    fn find_offset(&self, target_symbol: &str) -> Option<u64>;
 }
 
-impl PatternEquation<OffAndSize> {
+impl FindOffset for PatternEquation<OffAndSize> {
     fn find_offset(&self, target_symbol: &str) -> Option<u64> {
         let Self { inner, type_data } = self;
         match inner {
