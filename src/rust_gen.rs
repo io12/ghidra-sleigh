@@ -5,6 +5,7 @@ use crate::ast::Constraint;
 use crate::ast::ConstraintCompare;
 use crate::ast::ConstraintCompareOp;
 use crate::ast::Constructor;
+use crate::ast::ContextListItem;
 use crate::ast::DisplayToken;
 use crate::ast::Endian;
 use crate::ast::PExpression;
@@ -25,6 +26,7 @@ use crate::context::TokenField;
 use proc_macro2::Ident;
 use proc_macro2::Literal;
 use proc_macro2::TokenStream;
+use quote::ToTokens;
 use quote::{format_ident, quote};
 
 type RootTable<'a> = BTreeMap<Ident, Vec<&'a Constructor<OffAndSize>>>;
@@ -94,11 +96,20 @@ enum InstructionEnumVariant<'a> {
     Unique(CtorEnumVariant<'a>),
 }
 
+#[derive(Copy, Clone)]
+struct ContextItemSymbol<'a> {
+    size: u8,
+    expr: &'a PExpression,
+}
+
+#[derive(Copy, Clone)]
 enum LiveSymbol<'a> {
     Subtable(Subtable<'a>),
     Value(&'a TokenFieldData),
+    ContextBlockItem(ContextItemSymbol<'a>),
 }
 
+#[derive(Copy, Clone)]
 enum Subtable<'a> {
     Singleton(&'a NonRootSingletonConstructor<'a>),
     Multi(&'a MultiConstructor<'a>),
@@ -110,13 +121,29 @@ impl<'a> LiveSymbol<'a> {
         match self {
             LiveSymbol::Subtable(s) => s.to_type(),
             LiveSymbol::Value(s) => s.qualified_name.clone(),
+            LiveSymbol::ContextBlockItem(s) => s.to_type(),
         }
     }
 
-    fn gen_call_disasm(self, input: &TokenStream) -> TokenStream {
+    fn gen_call_disasm(
+        self,
+        generator: &RustCodeGenerator,
+        input: &TokenStream,
+        addr: &TokenStream,
+    ) -> TokenStream {
         match self {
-            LiveSymbol::Subtable(s) => s.gen_call_disasm(input),
+            LiveSymbol::Subtable(s) => s.gen_call_disasm(input, addr),
             LiveSymbol::Value(s) => s.gen_call_disasm(input),
+            LiveSymbol::ContextBlockItem(s) => s.gen_call_disasm(generator, input, addr),
+        }
+    }
+
+    fn find_offset(self, sym_str: &str, ctor: &Constructor<OffAndSize>) -> u64 {
+        match self {
+            LiveSymbol::Subtable(_) | LiveSymbol::Value(_) => {
+                ctor.p_equation.find_offset(sym_str).unwrap()
+            }
+            LiveSymbol::ContextBlockItem(_) => 0,
         }
     }
 }
@@ -135,9 +162,24 @@ impl<'a> Subtable<'a> {
         quote!(#name)
     }
 
-    fn gen_call_disasm(&self, input: &TokenStream) -> TokenStream {
+    fn gen_call_disasm(&self, input: &TokenStream, addr: &TokenStream) -> TokenStream {
         let typ = self.to_type();
-        quote! { #typ::disasm(#input)? }
+        quote! { #typ::disasm(#input, #addr)? }
+    }
+}
+
+impl<'a> ContextItemSymbol<'a> {
+    fn to_type(&self) -> TokenStream {
+        make_int_type(self.size).to_token_stream()
+    }
+
+    fn gen_call_disasm(
+        &self,
+        generator: &RustCodeGenerator,
+        input: &TokenStream,
+        addr: &TokenStream,
+    ) -> TokenStream {
+        self.expr.gen(generator, input, addr)
     }
 }
 
@@ -176,6 +218,11 @@ fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
     collect_to_map_vec(iter)
 }
 
+fn make_int_type(bytes: u8) -> Ident {
+    let bits = bytes * 8;
+    format_ident!("u{bits}")
+}
+
 fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
     ctx.symbols
         .iter()
@@ -189,7 +236,7 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
                     parent,
                     qualified_name,
                     field: token_field.clone(),
-                    inner_int_type: format_ident!("u{}", token_field.token_size * 8),
+                    inner_int_type: make_int_type(token_field.token_size),
                 };
                 Some((symbol.as_str(), data))
             }
@@ -334,6 +381,10 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
+    fn gen_addr_int_type(&self) -> Ident {
+        make_int_type(self.ctx.default_space.size)
+    }
+
     fn lookup_subtable(&self, name: &str) -> Option<Subtable> {
         if name == INSTRUCTION {
             Some(Subtable::Root)
@@ -349,30 +400,61 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
-    fn lookup_live_symbol(&self, symbol: &str) -> Option<LiveSymbol> {
+    fn lookup_live_symbol(
+        &'a self,
+        symbol: &str,
+        ctor: &'a Constructor<OffAndSize>,
+    ) -> Option<LiveSymbol<'a>> {
         self.token_fields
             .get(symbol)
             .map(LiveSymbol::Value)
             .or_else(|| self.lookup_subtable(symbol).map(LiveSymbol::Subtable))
+            .or_else(|| {
+                ctor.context_block
+                    .context_list
+                    .iter()
+                    .find_map(|item| match item {
+                        ContextListItem::Eq(s, expr) => {
+                            if s == symbol {
+                                Some(LiveSymbol::ContextBlockItem(ContextItemSymbol {
+                                    size: self.ctx.default_space.size,
+                                    expr,
+                                }))
+                            } else {
+                                None
+                            }
+                        }
+                        ContextListItem::Set(_, _) => todo!(),
+                    })
+            })
     }
 
-    fn token_to_live_symbol(&'a self, tok: &'a DisplayToken) -> Option<(&'a str, LiveSymbol<'a>)> {
+    fn token_to_live_symbol(
+        &'a self,
+        tok: &'a DisplayToken,
+        ctor: &'a Constructor<OffAndSize>,
+    ) -> Option<(&'a str, LiveSymbol<'a>)> {
         match tok {
-            DisplayToken::Symbol(s) => self.lookup_live_symbol(s).map(|sym| (s.as_str(), sym)),
+            DisplayToken::Symbol(s) => self
+                .lookup_live_symbol(s, ctor)
+                .map(|sym| (s.as_str(), sym)),
             _ => None,
         }
     }
 
     fn iter_live_symbols(
         &'a self,
-        toks: &'a [DisplayToken],
+        ctor: &'a Constructor<OffAndSize>,
     ) -> impl Iterator<Item = (&'a str, LiveSymbol<'a>)> + 'a {
-        toks.iter().filter_map(|tok| self.token_to_live_symbol(tok))
+        ctor.display
+            .toks
+            .iter()
+            .filter_map(|tok| self.token_to_live_symbol(tok, ctor))
     }
 
-    fn gen_tuple_type(&self, toks: &[DisplayToken]) -> TokenStream {
+    fn gen_tuple_type(&self, ctor: &Constructor<OffAndSize>) -> TokenStream {
         let types = self
-            .iter_live_symbols(toks)
+            .iter_live_symbols(ctor)
             .map(|s| s.1.to_type())
             .collect::<Vec<TokenStream>>();
         gen_tuple(&types)
@@ -385,7 +467,7 @@ impl<'a> RustCodeGenerator<'a> {
             inner: EnumVariant { name, .. },
         }: &CtorEnumVariant,
     ) -> TokenStream {
-        let tuple_type = self.gen_tuple_type(&ctor.display.toks);
+        let tuple_type = self.gen_tuple_type(ctor);
         quote! { #name #tuple_type , }
     }
 
@@ -416,7 +498,7 @@ impl<'a> RustCodeGenerator<'a> {
                     ctor,
                     inner: EnumVariant { name, .. },
                 }) => {
-                    let tuple_type = self.gen_tuple_type(&ctor.display.toks);
+                    let tuple_type = self.gen_tuple_type(ctor);
                     quote! { #name #tuple_type , }
                 }
             })
@@ -456,7 +538,7 @@ impl<'a> RustCodeGenerator<'a> {
         self.non_root_sing_ctors
             .values()
             .map(|NonRootSingletonConstructor { name, ctor, .. }| {
-                let tuple_type = self.gen_tuple_type(&ctor.display.toks);
+                let tuple_type = self.gen_tuple_type(ctor);
                 quote! { struct #name #tuple_type ; }
             })
             .collect()
@@ -504,7 +586,7 @@ impl<'a> RustCodeGenerator<'a> {
             inner: EnumVariant { qualified_name, .. },
         }: &CtorEnumVariant,
     ) -> TokenStream {
-        let tuple_destruct = self.gen_tuple_destruct(&ctor.display.toks);
+        let tuple_destruct = self.gen_tuple_destruct(ctor);
         quote!(#qualified_name #tuple_destruct)
     }
 
@@ -519,7 +601,7 @@ impl<'a> RustCodeGenerator<'a> {
         &self,
         NonRootSingletonConstructor { name, ctor, .. }: &NonRootSingletonConstructor,
     ) -> TokenStream {
-        let tuple_destruct = self.gen_tuple_destruct(&ctor.display.toks);
+        let tuple_destruct = self.gen_tuple_destruct(ctor);
         quote! { let #name #tuple_destruct = self; }
     }
 
@@ -528,7 +610,7 @@ impl<'a> RustCodeGenerator<'a> {
             .values()
             .map(|nrsc @ NonRootSingletonConstructor { name, .. }| {
                 let destruct_stmt = self.gen_destruct_stmt(nrsc);
-                let writes = self.gen_display_write_stmts(&nrsc.ctor.display.toks);
+                let writes = self.gen_display_write_stmts(&nrsc.ctor);
                 let body = quote! {
                     #destruct_stmt
                     #writes
@@ -541,7 +623,7 @@ impl<'a> RustCodeGenerator<'a> {
 
     fn gen_multi_ctor_display_impl_arm(&self, variant: &CtorEnumVariant) -> TokenStream {
         let match_pattern = self.gen_match_pattern(variant);
-        let writes = self.gen_display_write_stmts(&variant.ctor.display.toks);
+        let writes = self.gen_display_write_stmts(&variant.ctor);
         quote! { #match_pattern => { #writes } }
     }
 
@@ -571,10 +653,10 @@ impl<'a> RustCodeGenerator<'a> {
 
     fn iter_display_tok_fields(
         &'a self,
-        toks: &'a [DisplayToken],
+        ctor: &'a Constructor<OffAndSize>,
     ) -> impl Iterator<Item = (Option<usize>, &'a DisplayToken)> {
-        toks.iter().scan(0, |state, tok| {
-            if self.token_to_live_symbol(tok).is_some() {
+        ctor.display.toks.iter().scan(0, |state, tok| {
+            if self.token_to_live_symbol(tok, ctor).is_some() {
                 let i = *state;
                 *state += 1;
                 Some((Some(i), tok))
@@ -584,9 +666,9 @@ impl<'a> RustCodeGenerator<'a> {
         })
     }
 
-    fn gen_tuple_destruct(&self, toks: &[DisplayToken]) -> TokenStream {
+    fn gen_tuple_destruct(&self, ctor: &Constructor<OffAndSize>) -> TokenStream {
         let bindings = self
-            .iter_live_symbols(toks)
+            .iter_live_symbols(ctor)
             .enumerate()
             .map(|(i, _)| {
                 let ident = format_ident!("_{i}");
@@ -596,8 +678,8 @@ impl<'a> RustCodeGenerator<'a> {
         gen_tuple(&bindings)
     }
 
-    fn gen_display_write_stmts(&self, toks: &[DisplayToken]) -> TokenStream {
-        self.iter_display_tok_fields(toks)
+    fn gen_display_write_stmts(&self, ctor: &Constructor<OffAndSize>) -> TokenStream {
+        self.iter_display_tok_fields(ctor)
             .map(|(opt_field, tok)| match (opt_field, tok) {
                 (None, DisplayToken::Caret) => quote! {},
                 (None, DisplayToken::String(s) | DisplayToken::Symbol(s)) => {
@@ -667,6 +749,7 @@ impl<'a> RustCodeGenerator<'a> {
     fn gen_check_pattern(
         &self,
         input: &TokenStream,
+        addr: &TokenStream,
         PatternEquation {
             inner,
             type_data: OffAndSize { off, .. },
@@ -677,18 +760,18 @@ impl<'a> RustCodeGenerator<'a> {
                 Atomic::Constraint(Constraint::Compare(ConstraintCompare { op, symbol, expr })) => {
                     let op = op.gen();
                     let token = self.token_fields.get(symbol.as_str()).unwrap();
-                    let expr = expr.gen();
+                    let expr = expr.gen(self, input, addr);
                     let input = gen_input_slice(input, *off);
                     let token_disasm = token.gen_call_disasm(&input);
                     quote! { (#token_disasm.0 #op #expr) }
                 }
                 Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
-                Atomic::Parenthesized(p) => self.gen_check_pattern(input, p),
+                Atomic::Parenthesized(p) => self.gen_check_pattern(input, addr, p),
             },
             PatternEquationInner::Bin(bin) => {
                 let PatternEquationBin { op, l, r } = &**bin;
-                let l = self.gen_check_pattern(input, l);
-                let r = self.gen_check_pattern(input, r);
+                let l = self.gen_check_pattern(input, addr, l);
+                let r = self.gen_check_pattern(input, addr, r);
                 match op {
                     PatternEquationBinOp::And | PatternEquationBinOp::Cat => {
                         quote! { ( #l && #r ) }
@@ -703,14 +786,15 @@ impl<'a> RustCodeGenerator<'a> {
         &self,
         name: &TokenStream,
         input: &TokenStream,
+        addr: &TokenStream,
         ctor: &Constructor<OffAndSize>,
     ) -> TokenStream {
         let construct_args = self
-            .iter_live_symbols(&ctor.display.toks)
+            .iter_live_symbols(ctor)
             .map(|(sym_str, sym_live)| {
-                let off = ctor.p_equation.find_offset(sym_str).unwrap();
+                let off = sym_live.find_offset(sym_str, ctor);
                 let input = gen_input_slice(input, off);
-                sym_live.gen_call_disasm(&input)
+                sym_live.gen_call_disasm(self, &input, addr)
             })
             .collect::<Vec<TokenStream>>();
         let construct_args = gen_tuple(&construct_args);
@@ -722,11 +806,13 @@ impl<'a> RustCodeGenerator<'a> {
         NonRootSingletonConstructor { name, ctor, .. }: &NonRootSingletonConstructor,
     ) -> TokenStream {
         let input = quote!(input);
-        let check_pattern = self.gen_check_pattern(&input, &ctor.p_equation);
-        let disasm_ctor = self.gen_disasm_ctor(&quote!(#name), &input, ctor);
+        let addr = quote!(addr);
+        let check_pattern = self.gen_check_pattern(&input, &addr, &ctor.p_equation);
+        let disasm_ctor = self.gen_disasm_ctor(&quote!(#name), &input, &addr, ctor);
+        let addr_int_type = self.gen_addr_int_type();
         quote! {
             impl #name {
-                fn disasm(input: &[u8]) -> Option<Self> {
+                fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
                     if #check_pattern {
                         Some(#disasm_ctor)
                     } else {
@@ -748,6 +834,7 @@ impl<'a> RustCodeGenerator<'a> {
         &self,
         MultiConstructor { name, variants }: &MultiConstructor,
     ) -> TokenStream {
+        let addr_int_type = self.gen_addr_int_type();
         let checks = variants
             .iter()
             .map(
@@ -755,8 +842,10 @@ impl<'a> RustCodeGenerator<'a> {
                      ctor,
                      inner: EnumVariant { qualified_name, .. },
                  }| {
-                    let check_pattern = self.gen_check_pattern(&quote!(input), &ctor.p_equation);
-                    let disasm_ctor = self.gen_disasm_ctor(qualified_name, &quote!(input), ctor);
+                    let input = quote!(input);
+                    let addr = quote!(addr);
+                    let check_pattern = self.gen_check_pattern(&input, &addr, &ctor.p_equation);
+                    let disasm_ctor = self.gen_disasm_ctor(qualified_name, &input, &addr, ctor);
                     quote! {
                         if #check_pattern {
                             Some(#disasm_ctor)
@@ -767,7 +856,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl #name {
-                fn disasm(input: &[u8]) -> Option<Self> {
+                fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -787,6 +876,7 @@ impl<'a> RustCodeGenerator<'a> {
     }
 
     fn gen_insn_enum_disasm(&self) -> TokenStream {
+        let addr_int_type = self.gen_addr_int_type();
         let checks = self
             .instruction_enum
             .iter()
@@ -796,12 +886,17 @@ impl<'a> RustCodeGenerator<'a> {
                         name,
                         qualified_name,
                     }) => {
-                        let disasm = quote!(#name::disasm(input));
+                        let disasm = quote!(#name::disasm(input, addr));
                         (quote!(#disasm.is_some()), quote!(#qualified_name(#disasm?)))
                     }
                     InstructionEnumVariant::Unique(CtorEnumVariant { ctor, inner }) => (
-                        self.gen_check_pattern(&quote!(input), &ctor.p_equation),
-                        self.gen_disasm_ctor(&inner.qualified_name, &quote!(input), ctor),
+                        self.gen_check_pattern(&quote!(input), &quote!(addr), &ctor.p_equation),
+                        self.gen_disasm_ctor(
+                            &inner.qualified_name,
+                            &quote!(input),
+                            &quote!(addr),
+                            ctor,
+                        ),
                     ),
                 };
                 quote! {
@@ -813,7 +908,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl Instruction {
-                fn disasm(input: &[u8]) -> Option<Self> {
+                fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -997,25 +1092,42 @@ impl PExpressionUnaryOp {
 }
 
 impl PExpression {
-    fn gen(&self) -> TokenStream {
+    fn gen(
+        &self,
+        generator: &RustCodeGenerator,
+        input: &TokenStream,
+        addr: &TokenStream,
+    ) -> TokenStream {
         use PExpression::*;
         match self {
             ConstantValue(x) => {
                 let x = Literal::u64_unsuffixed(*x);
                 quote!(#x)
             }
-            Symbol(_) => todo!(),
+            Symbol(s) => match generator.ctx.symbols.get(s).unwrap() {
+                SymbolData::Value(_) => {
+                    let parsed_tok = generator
+                        .token_fields
+                        .get(s.as_str())
+                        .unwrap()
+                        .gen_call_disasm(input);
+                    let int_type = generator.gen_addr_int_type();
+                    quote!((#parsed_tok.0 as #int_type))
+                }
+                SymbolData::End => addr.to_owned(),
+                _ => panic!(),
+            },
             Bin(bin) => {
                 let PExpressionBin { op, l, r } = &**bin;
                 let op = op.gen();
-                let l = l.gen();
-                let r = r.gen();
+                let l = l.gen(generator, input, addr);
+                let r = r.gen(generator, input, addr);
                 quote!((#l #op #r))
             }
             Unary(unary) => {
                 let PExpressionUnary { op, operand } = &**unary;
                 let op = op.gen();
-                let operand = operand.gen();
+                let operand = operand.gen(generator, input, addr);
                 quote!((#op #operand))
             }
         }

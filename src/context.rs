@@ -5,7 +5,7 @@ use crate::ast::*;
 #[derive(Debug, Copy, Clone)]
 pub struct OffAndSize {
     pub off: u64,
-    size: u64,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -93,7 +93,7 @@ pub struct SleighContext {
     endian: Endian,
     align: u8,
     pub symbols: HashMap<String, SymbolData>,
-    default_space: SpaceDef,
+    pub default_space: SpaceDef,
 }
 
 impl SleighContext {
@@ -118,6 +118,12 @@ impl SleighContext {
                 default: false,
             },
         };
+
+        ret.symbols
+            .insert("inst_start".to_owned(), SymbolData::Start);
+        ret.symbols.insert("inst_next".to_owned(), SymbolData::End);
+        ret.symbols
+            .insert("inst_next2".to_owned(), SymbolData::Next2);
 
         for def in &sleigh.defs {
             match def {
