@@ -113,12 +113,12 @@ impl<'a> LiveSymbol<'a> {
         self,
         generator: &RustCodeGenerator,
         input: &TokenStream,
-        addr: &TokenStream,
+        inst_next: &TokenStream,
     ) -> TokenStream {
         match self {
-            LiveSymbol::Subtable(s) => s.gen_call_disasm(input, addr),
+            LiveSymbol::Subtable(s) => s.gen_call_disasm(input, inst_next),
             LiveSymbol::Value(s) => s.gen_call_disasm(input),
-            LiveSymbol::ContextBlockItem(s) => s.gen_call_disasm(generator, input, addr),
+            LiveSymbol::ContextBlockItem(s) => s.gen_call_disasm(generator, input, inst_next),
         }
     }
 
@@ -146,9 +146,9 @@ impl<'a> Subtable<'a> {
         quote!(#name)
     }
 
-    fn gen_call_disasm(&self, input: &TokenStream, addr: &TokenStream) -> TokenStream {
+    fn gen_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
         let typ = self.to_type();
-        quote! { #typ::disasm(#input, #addr)? }
+        quote! { #typ::disasm(#input, #inst_next)? }
     }
 }
 
@@ -161,9 +161,9 @@ impl<'a> ContextItemSymbol<'a> {
         &self,
         generator: &RustCodeGenerator,
         input: &TokenStream,
-        addr: &TokenStream,
+        inst_next: &TokenStream,
     ) -> TokenStream {
-        generator.gen_p_expr(self.expr, input, addr)
+        generator.gen_p_expr(self.expr, input, inst_next)
     }
 }
 
@@ -749,7 +749,7 @@ impl<'a> RustCodeGenerator<'a> {
         &self,
         expr: &PExpression,
         input: &TokenStream,
-        addr: &TokenStream,
+        inst_next: &TokenStream,
     ) -> TokenStream {
         use PExpression::*;
         match expr {
@@ -767,20 +767,20 @@ impl<'a> RustCodeGenerator<'a> {
                     let int_type = self.gen_addr_int_type();
                     quote!(#int_type::from(#parsed_tok.0))
                 }
-                SymbolData::End => addr.to_owned(),
+                SymbolData::End => inst_next.to_owned(),
                 _ => panic!(),
             },
             Bin(bin) => {
                 let PExpressionBin { op, l, r } = &**bin;
                 let op = op.gen();
-                let l = self.gen_p_expr(l, input, addr);
-                let r = self.gen_p_expr(r, input, addr);
+                let l = self.gen_p_expr(l, input, inst_next);
+                let r = self.gen_p_expr(r, input, inst_next);
                 quote!((#l #op #r))
             }
             Unary(unary) => {
                 let PExpressionUnary { op, operand } = &**unary;
                 let op = op.gen();
-                let operand = self.gen_p_expr(operand, input, addr);
+                let operand = self.gen_p_expr(operand, input, inst_next);
                 quote!((#op #operand))
             }
         }
@@ -793,7 +793,7 @@ impl<'a> RustCodeGenerator<'a> {
     fn gen_check_pattern(
         &self,
         input: &TokenStream,
-        addr: &TokenStream,
+        inst_next: &TokenStream,
         PatternEquation {
             inner,
             type_data: OffAndSize { off, .. },
@@ -804,18 +804,18 @@ impl<'a> RustCodeGenerator<'a> {
                 Atomic::Constraint(Constraint::Compare(ConstraintCompare { op, symbol, expr })) => {
                     let op = op.gen();
                     let token = self.token_fields.get(symbol.as_str()).unwrap();
-                    let expr = self.gen_p_expr(expr, input, addr);
+                    let expr = self.gen_p_expr(expr, input, inst_next);
                     let input = gen_input_slice(input, *off);
                     let token_disasm = token.gen_call_disasm(&input);
                     quote! { (#token_disasm.0 #op #expr) }
                 }
                 Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
-                Atomic::Parenthesized(p) => self.gen_check_pattern(input, addr, p),
+                Atomic::Parenthesized(p) => self.gen_check_pattern(input, inst_next, p),
             },
             PatternEquationInner::Bin(bin) => {
                 let PatternEquationBin { op, l, r } = &**bin;
-                let l = self.gen_check_pattern(input, addr, l);
-                let r = self.gen_check_pattern(input, addr, r);
+                let l = self.gen_check_pattern(input, inst_next, l);
+                let r = self.gen_check_pattern(input, inst_next, r);
                 match op {
                     PatternEquationBinOp::And | PatternEquationBinOp::Cat => {
                         quote! { ( #l && #r ) }
@@ -850,13 +850,13 @@ impl<'a> RustCodeGenerator<'a> {
         NonRootSingletonConstructor { name, ctor, .. }: &NonRootSingletonConstructor,
     ) -> TokenStream {
         let input = quote!(input);
-        let addr = quote!(addr);
-        let check_pattern = self.gen_check_pattern(&input, &addr, &ctor.p_equation);
-        let disasm_ctor = self.gen_disasm_ctor(&quote!(#name), &input, &addr, ctor);
+        let inst_next = quote!(inst_next);
+        let check_pattern = self.gen_check_pattern(&input, &inst_next, &ctor.p_equation);
+        let disasm_ctor = self.gen_disasm_ctor(&quote!(#name), &input, &inst_next, ctor);
         let addr_int_type = self.gen_addr_int_type();
         quote! {
             impl #name {
-                fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
+                fn disasm(input: &[u8], inst_next: #addr_int_type) -> Option<Self> {
                     if #check_pattern {
                         Some(#disasm_ctor)
                     } else {
@@ -877,7 +877,13 @@ impl<'a> RustCodeGenerator<'a> {
     fn gen_mult_ctor_disasm(
         &self,
         MultiConstructor { name, variants }: &MultiConstructor,
+        is_mnemonic_enum: bool,
     ) -> TokenStream {
+        let param_name = if is_mnemonic_enum {
+            quote!(addr)
+        } else {
+            quote!(inst_next)
+        };
         let addr_int_type = self.gen_addr_int_type();
         let checks = variants
             .iter()
@@ -887,9 +893,16 @@ impl<'a> RustCodeGenerator<'a> {
                      inner: EnumVariant { qualified_name, .. },
                  }| {
                     let input = quote!(input);
-                    let addr = quote!(addr);
-                    let check_pattern = self.gen_check_pattern(&input, &addr, &ctor.p_equation);
-                    let disasm_ctor = self.gen_disasm_ctor(qualified_name, &input, &addr, ctor);
+                    let inst_size = Literal::u64_unsuffixed(ctor.p_equation.type_data.size);
+                    let inst_next = if is_mnemonic_enum {
+                        quote!(addr + #inst_size)
+                    } else {
+                        quote!(inst_next)
+                    };
+                    let check_pattern =
+                        self.gen_check_pattern(&input, &inst_next, &ctor.p_equation);
+                    let disasm_ctor =
+                        self.gen_disasm_ctor(qualified_name, &input, &inst_next, ctor);
                     quote! {
                         if #check_pattern {
                             Some(#disasm_ctor)
@@ -900,7 +913,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl #name {
-                fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
+                fn disasm(input: &[u8], #param_name: #addr_int_type) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -911,11 +924,17 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
-    fn gen_mult_ctor_disasms(&self) -> TokenStream {
+    fn gen_non_root_mult_ctor_disasms(&self) -> TokenStream {
         self.non_root_mult_ctors
             .values()
-            .chain(self.mnemonic_enums.iter())
-            .map(|c| self.gen_mult_ctor_disasm(c))
+            .map(|c| self.gen_mult_ctor_disasm(c, false))
+            .collect()
+    }
+
+    fn gen_mnemonic_enum_disasms(&self) -> TokenStream {
+        self.mnemonic_enums
+            .iter()
+            .map(|c| self.gen_mult_ctor_disasm(c, true))
             .collect()
     }
 
@@ -933,15 +952,15 @@ impl<'a> RustCodeGenerator<'a> {
                         let disasm = quote!(#name::disasm(input, addr));
                         (quote!(#disasm.is_some()), quote!(#qualified_name(#disasm?)))
                     }
-                    InstructionEnumVariant::Unique(CtorEnumVariant { ctor, inner }) => (
-                        self.gen_check_pattern(&quote!(input), &quote!(addr), &ctor.p_equation),
-                        self.gen_disasm_ctor(
-                            &inner.qualified_name,
-                            &quote!(input),
-                            &quote!(addr),
-                            ctor,
-                        ),
-                    ),
+                    InstructionEnumVariant::Unique(CtorEnumVariant { ctor, inner }) => {
+                        let input = quote!(input);
+                        let inst_size = Literal::u64_unsuffixed(ctor.p_equation.type_data.size);
+                        let inst_next = quote!(addr + #inst_size);
+                        (
+                            self.gen_check_pattern(&input, &inst_next, &ctor.p_equation),
+                            self.gen_disasm_ctor(&inner.qualified_name, &input, &inst_next, ctor),
+                        )
+                    }
                 };
                 quote! {
                     if #check_pattern {
@@ -966,12 +985,14 @@ impl<'a> RustCodeGenerator<'a> {
     fn gen_disasm(&self) -> TokenStream {
         let tok_reads = self.gen_tok_disasms();
         let non_root_sing_ctor_disasms = self.gen_non_root_sing_ctor_disasms();
-        let mult_ctor_disasms = self.gen_mult_ctor_disasms();
+        let non_root_mult_ctor_disasms = self.gen_non_root_mult_ctor_disasms();
+        let mnemonic_enum_disasms = self.gen_mnemonic_enum_disasms();
         let insn_enum_disasm = self.gen_insn_enum_disasm();
         quote! {
             #tok_reads
             #non_root_sing_ctor_disasms
-            #mult_ctor_disasms
+            #non_root_mult_ctor_disasms
+            #mnemonic_enum_disasms
             #insn_enum_disasm
         }
     }
