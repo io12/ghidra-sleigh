@@ -10,11 +10,8 @@ pub struct OffAndSize {
 
 #[derive(Debug, Clone)]
 pub struct TokenField {
-    pub parent_name: String,
-    pub token_size: u8,
-    pub endian: Endian,
-    pub low: u8,
-    pub high: u8,
+    pub parent_info: TokenParentInfo,
+    pub field_info: FieldDef,
 }
 
 pub enum SymbolData {
@@ -90,7 +87,7 @@ pub enum SymbolData {
 }
 
 pub struct SleighContext {
-    endian: Endian,
+    pub endian: Endian,
     align: u8,
     pub symbols: HashMap<String, SymbolData>,
     pub default_space: SpaceDef,
@@ -100,7 +97,7 @@ impl SleighContext {
     fn lookup_symbol_size(&self, symbol: &str) -> Option<u64> {
         match self.symbols.get(symbol)? {
             SymbolData::Subtable(c) => Some(c.get(0)?.p_equation.type_data.size),
-            SymbolData::Value(token_field) => Some(token_field.token_size.into()),
+            SymbolData::Value(token_field) => Some(token_field.parent_info.size.into()),
             SymbolData::VarNode(off_size) => Some(off_size.size),
             _ => None,
         }
@@ -130,22 +127,14 @@ impl SleighContext {
                 Def::EndianDef(EndianDef { endian }) => ret.endian = *endian,
                 Def::AlignDef(AlignDef { align }) => ret.align = *align,
                 Def::Definition(def) => match def {
-                    Definition::TokenDef(TokenDef {
-                        name,
-                        size,
-                        endian,
-                        fields,
-                    }) => {
-                        ret.symbols.insert(name.to_owned(), SymbolData::Token);
+                    Definition::TokenDef(TokenDef { info, fields }) => {
+                        ret.symbols.insert(info.name.to_owned(), SymbolData::Token);
                         for field in fields {
                             ret.symbols.insert(
                                 field.name.to_owned(),
                                 SymbolData::Value(TokenField {
-                                    parent_name: name.to_owned(),
-                                    token_size: *size,
-                                    endian: endian.unwrap_or(ret.endian),
-                                    low: field.low,
-                                    high: field.high,
+                                    parent_info: info.clone(),
+                                    field_info: field.clone(),
                                 }),
                             );
                         }
@@ -306,11 +295,8 @@ impl SleighContext {
 
     fn compute_token_symbol(&self, symbol: &str, input: &[u8]) -> u8 {
         if let Some(SymbolData::Value(TokenField {
-            parent_name: _,
-            token_size: _,
-            endian: _,
-            low,
-            high,
+            field_info: FieldDef { low, high, .. },
+            ..
         })) = self.symbols.get(symbol)
         {
             compute_bit_range(*input.get(0).unwrap(), *low, *high)
@@ -427,11 +413,8 @@ impl SleighContext {
                 }
             }
             Some(SymbolData::Value(TokenField {
-                parent_name: _,
-                token_size: _,
-                endian: _,
-                low,
-                high,
+                field_info: FieldDef { low, high, .. },
+                ..
             })) => {
                 let b = compute_bit_range(*input.get(off as usize).unwrap(), *low, *high);
                 out.push_str(&format!("{b:#x}"))

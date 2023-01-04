@@ -286,9 +286,9 @@ fn parse_base(input: &str) -> IResult<&str, Base> {
     ))(input)
 }
 
-fn parse_token_def(input: &str) -> IResult<&str, TokenDef> {
+fn parse_token_parent_info(input: &str) -> IResult<&str, TokenParentInfo> {
     map(
-        delimited(
+        preceded(
             pair(tok("define"), tok("token")),
             tuple((
                 identifier,
@@ -300,16 +300,19 @@ fn parse_token_def(input: &str) -> IResult<&str, TokenDef> {
                     }
                 }),
                 opt(preceded(pair(tok("endian"), tok("=")), parse_endian)),
-                many1(parse_field_def),
             )),
+        ),
+        |(name, size, endian)| TokenParentInfo { name, size, endian },
+    )(input)
+}
+
+fn parse_token_def(input: &str) -> IResult<&str, TokenDef> {
+    map(
+        terminated(
+            pair(parse_token_parent_info, many1(parse_field_def)),
             tok(";"),
         ),
-        |(name, size, endian, fields)| TokenDef {
-            name,
-            size,
-            endian,
-            fields,
-        },
+        |(info, fields)| TokenDef { info, fields },
     )(input)
 }
 

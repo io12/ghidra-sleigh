@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use sleigh_types::{
     ast::{
         Atomic, Constraint, ConstraintCompare, ConstraintCompareOp, Constructor, ContextListItem,
-        DisplayToken, Endian, PExpression, PExpressionBin, PExpressionBinOp, PExpressionUnary,
-        PExpressionUnaryOp, PatternEquation, PatternEquationBin, PatternEquationBinOp,
-        PatternEquationInner, INSTRUCTION,
+        DisplayToken, Endian, FieldDef, PExpression, PExpressionBin, PExpressionBinOp,
+        PExpressionUnary, PExpressionUnaryOp, PatternEquation, PatternEquationBin,
+        PatternEquationBinOp, PatternEquationInner, TokenParentInfo, INSTRUCTION,
     },
     context::{OffAndSize, SleighContext, SymbolData, TokenField},
 };
@@ -213,14 +213,14 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
         .filter_map(|(symbol, data)| match data {
             SymbolData::Value(token_field) => {
                 let name = symbol_to_type_ident(&symbol);
-                let parent = symbol_to_mod_ident(&token_field.parent_name);
+                let parent = symbol_to_mod_ident(&token_field.parent_info.name);
                 let qualified_name = quote!(#parent::#name);
                 let data = TokenFieldData {
                     name,
                     parent,
                     qualified_name,
                     field: token_field.clone(),
-                    inner_int_type: make_int_type(token_field.token_size),
+                    inner_int_type: make_int_type(token_field.parent_info.size),
                 };
                 Some((symbol.as_str(), data))
             }
@@ -559,7 +559,7 @@ impl<'a> RustCodeGenerator<'a> {
         self.token_fields
             .values()
             .map(|data| {
-                let write = gen_int_write(data.field.token_size, quote!(self.0));
+                let write = gen_int_write(data.field.parent_info.size, quote!(self.0));
                 gen_display_impl(&data.qualified_name, write)
             })
             .collect()
@@ -787,7 +787,10 @@ impl<'a> RustCodeGenerator<'a> {
     }
 
     fn gen_tok_disasms(&self) -> TokenStream {
-        self.token_fields.values().map(gen_tok_disasm).collect()
+        self.token_fields
+            .values()
+            .map(|field| gen_tok_disasm(self.ctx.endian, field))
+            .collect()
     }
 
     fn gen_check_pattern(
@@ -1078,22 +1081,21 @@ fn gen_from_endian_bytes(endian: Endian) -> Ident {
 }
 
 fn gen_tok_disasm(
+    default_endian: Endian,
     TokenFieldData {
         qualified_name,
         field:
             TokenField {
-                token_size,
-                endian,
-                low,
-                high,
-                ..
+                field_info: FieldDef { low, high, .. },
+                parent_info: TokenParentInfo { size, endian, .. },
             },
         inner_int_type,
         ..
     }: &TokenFieldData,
 ) -> TokenStream {
-    let from_endian_bytes = gen_from_endian_bytes(*endian);
-    let token_size = Literal::u8_unsuffixed(*token_size);
+    let endian = endian.unwrap_or(default_endian);
+    let from_endian_bytes = gen_from_endian_bytes(endian);
+    let token_size = Literal::u8_unsuffixed(*size);
     let low = *low as u64;
     let high = *high as u64;
     quote! {

@@ -44,10 +44,15 @@ pub enum Definition {
 
 #[derive(Debug, Clone)]
 pub struct TokenDef {
+    pub info: TokenParentInfo,
+    pub fields: Vec<FieldDef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenParentInfo {
     pub name: String,
     pub size: u8,
     pub endian: Option<Endian>,
-    pub fields: Vec<FieldDef>,
 }
 
 #[derive(Debug, Clone)]
