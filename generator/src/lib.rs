@@ -462,11 +462,17 @@ impl<'a> RustCodeGenerator<'a> {
 
     fn gen_multi_ctors(&self, iter: impl Iterator<Item = &'a MultiConstructor<'a>>) -> TokenStream {
         iter.map(|MultiConstructor { name, variants }| {
+            let derives = gen_derives();
             let variants = variants
                 .iter()
                 .map(|variant| self.gen_enum_variant(variant))
                 .collect::<TokenStream>();
-            quote! { pub enum #name { #variants } }
+            quote! {
+                #derives
+                pub enum #name {
+                    #variants
+                }
+            }
         })
         .collect()
     }
@@ -476,6 +482,7 @@ impl<'a> RustCodeGenerator<'a> {
     }
 
     fn gen_instruction_enum(&self) -> TokenStream {
+        let derives = gen_derives();
         let variants = self
             .instruction_enum
             .iter()
@@ -492,10 +499,16 @@ impl<'a> RustCodeGenerator<'a> {
                 }
             })
             .collect::<TokenStream>();
-        quote!(pub enum Instruction { #variants })
+        quote! {
+            #derives
+            pub enum Instruction {
+                #variants
+            }
+        }
     }
 
     fn gen_token_types(&self) -> TokenStream {
+        let derives = gen_derives();
         let token_defs = self
             .token_fields
             .values()
@@ -511,7 +524,12 @@ impl<'a> RustCodeGenerator<'a> {
                              name,
                              inner_int_type,
                              ..
-                         }| quote! { pub struct #name(pub #inner_int_type); },
+                         }| {
+                            quote! {
+                                #derives
+                                pub struct #name(pub #inner_int_type);
+                            }
+                        },
                     )
                     .collect::<TokenStream>();
                 quote! {
@@ -524,11 +542,15 @@ impl<'a> RustCodeGenerator<'a> {
     }
 
     fn gen_non_root_singleton_constructor_types(&self) -> TokenStream {
+        let derives = gen_derives();
         self.non_root_sing_ctors
             .values()
             .map(|NonRootSingletonConstructor { name, ctor, .. }| {
                 let tuple_type = self.gen_tuple_type(true, ctor);
-                quote! { pub struct #name #tuple_type ; }
+                quote! {
+                    #derives
+                    pub struct #name #tuple_type ;
+                }
             })
             .collect()
     }
@@ -1125,6 +1147,12 @@ fn gen_int_write(size_in_bytes: u8, expr: TokenStream) -> TokenStream {
     let num_digits = size_in_bytes * 2;
     let fmt = format!("{{:0{num_digits}X}}");
     quote!(write!(f, #fmt, #expr))
+}
+
+fn gen_derives() -> TokenStream {
+    quote! {
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    }
 }
 
 trait Generate {
