@@ -154,7 +154,7 @@ impl<'a> Subtable<'a> {
 
 impl<'a> ContextItemSymbol<'a> {
     fn to_type(&self) -> TokenStream {
-        make_int_type(self.size).to_token_stream()
+        make_int_type(self.size, false).to_token_stream()
     }
 
     fn gen_call_disasm(
@@ -202,9 +202,10 @@ fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
     collect_to_map_vec(iter)
 }
 
-fn make_int_type(bytes: u8) -> Ident {
+fn make_int_type(bytes: u8, signed: bool) -> Ident {
+    let sign = if signed { "i" } else { "u" };
     let bits = bytes * 8;
-    format_ident!("u{bits}")
+    format_ident!("{sign}{bits}")
 }
 
 fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
@@ -220,7 +221,10 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
                     parent,
                     qualified_name,
                     field: token_field.clone(),
-                    inner_int_type: make_int_type(token_field.parent_info.size),
+                    inner_int_type: make_int_type(
+                        token_field.parent_info.size,
+                        token_field.field_info.signed,
+                    ),
                 };
                 Some((symbol.as_str(), data))
             }
@@ -366,7 +370,7 @@ impl<'a> RustCodeGenerator<'a> {
     }
 
     fn gen_addr_int_type(&self) -> Ident {
-        make_int_type(self.ctx.default_space.size)
+        make_int_type(self.ctx.default_space.size, false)
     }
 
     fn lookup_subtable(&self, name: &str) -> Option<Subtable> {
@@ -765,7 +769,7 @@ impl<'a> RustCodeGenerator<'a> {
                         .unwrap()
                         .gen_call_disasm(input);
                     let int_type = self.gen_addr_int_type();
-                    quote!(#int_type::from(#parsed_tok.0))
+                    quote!((#parsed_tok.0 as #int_type))
                 }
                 SymbolData::End => inst_next.to_owned(),
                 _ => panic!(),
@@ -775,7 +779,7 @@ impl<'a> RustCodeGenerator<'a> {
                 let op = op.gen();
                 let l = self.gen_p_expr(l, input, inst_next);
                 let r = self.gen_p_expr(r, input, inst_next);
-                quote!((#l #op #r))
+                quote!(#l.#op(#r))
             }
             Unary(unary) => {
                 let PExpressionUnary { op, operand } = &**unary;
@@ -1145,15 +1149,15 @@ impl Generate for PExpressionBinOp {
     fn gen(self) -> TokenStream {
         use PExpressionBinOp::*;
         match self {
-            Add => quote!(+),
-            Sub => quote!(-),
-            Mult => quote!(*),
-            LeftShift => quote!(<<),
-            RightShift => quote!(>>),
-            And => quote!(&),
-            Or => quote!(|),
-            Xor => quote!(^),
-            Div => quote!(/),
+            Add => quote!(wrapping_add),
+            Sub => quote!(wrapping_sub),
+            Mult => quote!(mul),
+            LeftShift => quote!(shl),
+            RightShift => quote!(shr),
+            And => quote!(bitand),
+            Or => quote!(bitor),
+            Xor => quote!(bitxor),
+            Div => quote!(div),
         }
     }
 }
