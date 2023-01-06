@@ -24,7 +24,7 @@ pub struct RustCodeGenerator<'a> {
     mnemonic_enums: Vec<MultiConstructor<'a>>,
 }
 
-/// ```rust
+/// ```text
 /// struct Name(InnerIntType);
 /// ```
 struct TokenFieldData {
@@ -39,7 +39,7 @@ struct TokenFieldData {
 /// NAME: I1 I2 I3
 /// ```
 ///
-/// ```rust
+/// ```text
 /// struct Name(I1, I2, I3);
 /// ```
 struct NonRootSingletonConstructor<'a> {
@@ -53,7 +53,7 @@ struct NonRootSingletonConstructor<'a> {
 /// NAME: C1 C2 C3
 /// ```
 ///
-/// ```rust
+/// ```text
 /// enum Name {
 ///     A1A2A3(A1, A2, A3),
 ///     B1B2B3(B1, B2, B3),

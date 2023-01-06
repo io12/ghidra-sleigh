@@ -207,6 +207,79 @@ impl SleighContext {
             }
         }
 
+        let mut table = HashMap::<String, Vec<Constructor<OffAndSize>>>::new();
+
+        // Sort constructors
+        let mut z3cfg = z3::Config::new();
+        z3cfg.set_proof_generation(false);
+        z3cfg.set_model_generation(false);
+        z3cfg.set_timeout_msec(1000);
+        let z3ctx = z3::Context::new(&z3cfg);
+        for (name, symbol_data) in &ret.symbols {
+            if let SymbolData::Subtable(ctors) = symbol_data {
+                use itertools::Itertools;
+                use petgraph::graph::{Graph, NodeIndex};
+
+                let max_size = ctors
+                    .iter()
+                    .map(|ctor| ctor.p_equation.type_data.size)
+                    .max()
+                    .unwrap();
+                let mut graph = Graph::<usize, ()>::new();
+                let nodes = (0..ctors.len())
+                    .into_iter()
+                    .map(|i| graph.add_node(i))
+                    .collect::<Vec<NodeIndex>>();
+                let edges = nodes
+                    .iter()
+                    .cloned()
+                    .cartesian_product(nodes.iter().cloned())
+                    .filter_map(|(n1, n2)| {
+                        let bv = z3::ast::BV::new_const(
+                            &z3ctx,
+                            "input",
+                            (max_size * 8).try_into().unwrap(),
+                        );
+                        let c1 = &ctors[graph[n1]];
+                        let c2 = &ctors[graph[n2]];
+                        let p1 = ret.peq_to_z3(&z3ctx, &bv, &c1.p_equation);
+                        let p2 = ret.peq_to_z3(&z3ctx, &bv, &c2.p_equation);
+                        let subset = z3::ast::forall_const(&z3ctx, &[&bv], &[], &p1.implies(&p2));
+                        let superset = z3::ast::forall_const(&z3ctx, &[&bv], &[], &p2.implies(&p1));
+                        let proper_subset = z3::ast::Bool::and(&z3ctx, &[&subset, &superset.not()]);
+                        let solver = z3::Solver::new(&z3ctx);
+                        solver.assert(&proper_subset);
+                        let result = solver.check();
+                        println!("{proper_subset} {result:?} {n1:?} {n2:?}");
+                        match result {
+                            z3::SatResult::Unsat => None,
+                            z3::SatResult::Unknown => panic!(),
+                            z3::SatResult::Sat => Some((n1, n2)),
+                        }
+                    })
+                    .collect::<Vec<(NodeIndex, NodeIndex)>>();
+                dbg!(edges.len());
+                graph.extend_with_edges(edges);
+                let sorted_nodes = match petgraph::algo::toposort(&graph, None) {
+                    Ok(sorted) => sorted,
+                    Err(_) => panic!("cycle at {name}, {graph:#?}"),
+                };
+                assert_eq!(sorted_nodes.len(), ctors.len());
+                let ctors = sorted_nodes
+                    .iter()
+                    .cloned()
+                    .map(|n| &ctors[graph[n]])
+                    .cloned()
+                    .collect::<Vec<Constructor<OffAndSize>>>();
+                table.insert(name.to_string(), ctors.clone());
+            }
+        }
+
+        // Put sorted constructors in context
+        for (name, ctors) in table {
+            ret.symbols.insert(name, SymbolData::Subtable(ctors));
+        }
+
         ret
     }
 
@@ -288,6 +361,93 @@ impl SleighContext {
                             type_data: OffAndSize { off, size },
                         }
                     }
+                }
+            }
+        }
+    }
+
+    fn peq_to_z3<'z>(
+        &self,
+        z3ctx: &'z z3::Context,
+        bv: &z3::ast::BV<'z>,
+        peq: &PatternEquation<OffAndSize>,
+    ) -> z3::ast::Bool<'z> {
+        use z3::ast::Ast;
+        use ConstraintCompareOp::*;
+        use PatternEquationInner::*;
+        match &peq.inner {
+            EllEq(e) => match &e.ell_rt.atomic {
+                Atomic::Constraint(c) => match c {
+                    Constraint::Compare(ConstraintCompare { symbol, op, expr }) => {
+                        let symbol = if let SymbolData::Value(tok_field) =
+                            self.symbols.get(symbol.as_str()).unwrap()
+                        {
+                            let FieldDef { high, low, .. } = tok_field.field_info;
+                            bv.extract(high.into(), low.into())
+                        } else {
+                            panic!()
+                        };
+                        let expr = self.pexpr_to_z3(z3ctx, symbol.get_size(), &expr);
+                        match op {
+                            Equal => symbol._eq(&expr),
+                            NotEqual => !symbol._eq(&expr),
+                            Less => symbol.bvult(&expr),
+                            LessEqual => symbol.bvule(&expr),
+                            Greater => symbol.bvugt(&expr),
+                            GreaterEqual => symbol.bvuge(&expr),
+                        }
+                    }
+                    Constraint::Symbol(_) => z3::ast::Bool::from_bool(z3ctx, true),
+                },
+                Atomic::Parenthesized(peq) => self.peq_to_z3(z3ctx, bv, &peq),
+            },
+            Bin(bin) => {
+                use PatternEquationBinOp::*;
+                let PatternEquationBin { op, l, r } = &**bin;
+                let l = self.peq_to_z3(z3ctx, bv, l);
+                let r = self.peq_to_z3(z3ctx, bv, r);
+                match op {
+                    And | Cat => l & r,
+                    Or => l | r,
+                }
+            }
+        }
+    }
+
+    fn pexpr_to_z3<'z>(
+        &self,
+        z3ctx: &'z z3::Context,
+        bit_width: u32,
+        e: &PExpression,
+    ) -> z3::ast::BV<'z> {
+        use PExpression::*;
+        match e {
+            ConstantValue(v) => z3::ast::BV::from_u64(z3ctx, *v, bit_width),
+            Symbol(_) => todo!(),
+            Bin(bin) => {
+                use PExpressionBinOp::*;
+                let PExpressionBin { op, l, r } = &**bin;
+                let l = self.pexpr_to_z3(z3ctx, bit_width, l);
+                let r = self.pexpr_to_z3(z3ctx, bit_width, r);
+                match op {
+                    Add => l + r,
+                    Sub => l - r,
+                    Mult => l * r,
+                    LeftShift => l.bvshl(&r),
+                    RightShift => l.bvlshr(&r),
+                    And => l & r,
+                    Or => l | r,
+                    Xor => l ^ r,
+                    Div => l.bvudiv(&r),
+                }
+            }
+            Unary(unary) => {
+                use PExpressionUnaryOp::*;
+                let PExpressionUnary { op, operand } = &**unary;
+                let operand = self.pexpr_to_z3(z3ctx, bit_width, operand);
+                match op {
+                    Minus => -operand,
+                    Not => !operand,
                 }
             }
         }

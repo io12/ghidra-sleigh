@@ -5,3 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+itertools = "0.10.5"
+petgraph = "0.6.2"
+z3 = "0.11.2"
+
