@@ -719,9 +719,10 @@ fn parse_rtl_export(input: &str) -> IResult<&str, RtlExport> {
 fn parse_export_var_node(input: &str) -> IResult<&str, ExportVarNode> {
     alt((
         map(identifier, |name| ExportVarNode::Symbol { name }),
-        map(separated_pair(ws(u8), tok(":"), ws(u8)), |(i1, i2)| {
-            ExportVarNode::Tpl { i1, i2 }
-        }),
+        map(
+            separated_pair(parse_u64, tok(":"), parse_u64),
+            |(i1, i2)| ExportVarNode::Tpl { i1, i2 },
+        ),
     ))(input)
 }
 

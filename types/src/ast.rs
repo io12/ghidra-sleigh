@@ -314,7 +314,7 @@ pub enum RtlExport {
 #[derive(Debug, Clone)]
 pub enum ExportVarNode {
     Symbol { name: String },
-    Tpl { i1: u8, i2: u8 },
+    Tpl { i1: u64, i2: u64 },
 }
 
 #[derive(Debug, Clone)]
