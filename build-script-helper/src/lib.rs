@@ -7,7 +7,8 @@ pub fn build(spec_path: &str) {
     println!("cargo:rerun-if-changed={spec_path}");
     let file = File::open(spec_path).unwrap();
     let reader = BufReader::new(file);
-    let sleigh = sleigh_parser::preprocess(reader);
+    let spec_dir = Path::new(spec_path).parent().unwrap();
+    let sleigh = sleigh_parser::preprocess(reader, spec_dir);
     let (rest, sleigh) = sleigh_parser::parse_sleigh(&sleigh).unwrap();
     assert_eq!(rest, "");
     let ctx = sleigh_types::context::SleighContext::new(&sleigh);

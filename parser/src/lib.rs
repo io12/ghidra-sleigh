@@ -16,6 +16,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::{BufRead, BufReader},
+    path::Path,
 };
 
 fn identifier_ref(input: &str) -> IResult<&str, &str> {
@@ -154,7 +155,12 @@ fn preprocess_expand_macros<'a>(line: &'a str, defs: &HashMap<String, String>) -
     .into_owned()
 }
 
-fn preprocess_internal(input: impl BufRead, out: &mut String, defs: &mut HashMap<String, String>) {
+fn preprocess_internal(
+    input: impl BufRead,
+    root: &Path,
+    out: &mut String,
+    defs: &mut HashMap<String, String>,
+) {
     let mut state_stack = vec![true];
     for line in input.lines() {
         let line = line.unwrap();
@@ -167,9 +173,10 @@ fn preprocess_internal(input: impl BufRead, out: &mut String, defs: &mut HashMap
         match preprocess_directive(&line, defs) {
             Ok(directive) => match directive.1 {
                 PreProcessDirective::Include { file_path } => {
+                    let file_path = root.join(file_path);
                     let f = File::open(file_path).unwrap();
                     let r = BufReader::new(f);
-                    preprocess_internal(r, out, defs);
+                    preprocess_internal(r, root, out, defs);
                 }
                 PreProcessDirective::Define { var_name, value } => {
                     if current_state {
@@ -215,10 +222,10 @@ fn preprocess_internal(input: impl BufRead, out: &mut String, defs: &mut HashMap
     }
 }
 
-pub fn preprocess(input: impl BufRead) -> String {
+pub fn preprocess(input: impl BufRead, root: &Path) -> String {
     let mut ret = String::new();
     let mut defs = HashMap::new();
-    preprocess_internal(input, &mut ret, &mut defs);
+    preprocess_internal(input, root, &mut ret, &mut defs);
     ret
 }
 
