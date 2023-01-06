@@ -212,19 +212,16 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
     ctx.symbols
         .iter()
         .filter_map(|(symbol, data)| match data {
-            SymbolData::Value(token_field) => {
+            SymbolData::Value { field, .. } => {
                 let name = symbol_to_type_ident(&symbol);
-                let parent = symbol_to_mod_ident(&token_field.parent_info.name);
+                let parent = symbol_to_mod_ident(&field.parent_info.name);
                 let qualified_name = quote!(#parent::#name);
                 let data = TokenFieldData {
                     name,
                     parent,
                     qualified_name,
-                    field: token_field.clone(),
-                    inner_int_type: make_int_type(
-                        token_field.parent_info.size,
-                        token_field.field_info.signed,
-                    ),
+                    field: field.clone(),
+                    inner_int_type: make_int_type(field.parent_info.size, field.field_info.signed),
                 };
                 Some((symbol.as_str(), data))
             }
@@ -784,7 +781,7 @@ impl<'a> RustCodeGenerator<'a> {
                 quote!(#x)
             }
             Symbol(s) => match self.ctx.symbols.get(s).unwrap() {
-                SymbolData::Value(_) => {
+                SymbolData::Value { .. } => {
                     let parsed_tok = self
                         .token_fields
                         .get(s.as_str())

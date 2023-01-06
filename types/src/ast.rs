@@ -140,8 +140,8 @@ pub struct NameAttach {
 
 #[derive(Debug, Clone)]
 pub struct VarAttach {
-    pub value_list: Vec<String>,
-    pub string_list: Vec<String>,
+    pub fields: Vec<String>,
+    pub registers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

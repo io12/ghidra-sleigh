@@ -44,7 +44,14 @@ pub enum SymbolData {
     /// Token field
     ///
     /// `NAME = (0,7)`
-    Value(TokenField),
+    Value {
+        field: TokenField,
+
+        /// Attached variable
+        ///
+        /// `attach variables [ NAME ] ATTACHED_VARS;`
+        attached_vars: Option<Vec<String>>,
+    },
 
     /// Attached value
     ///
@@ -65,11 +72,6 @@ pub enum SymbolData {
     ///
     /// `define space_name offset=0 size=1 [ NAME ];`
     VarNode(OffAndSize),
-
-    /// Attached variable
-    ///
-    /// `attach variables [ NAME ]`
-    VarList,
 
     /// Predefined `inst_start` symbol
     Start,
@@ -97,7 +99,7 @@ impl SleighContext {
     fn lookup_symbol_size(&self, symbol: &str) -> Option<u64> {
         match self.symbols.get(symbol)? {
             SymbolData::Subtable(c) => Some(c.get(0)?.p_equation.type_data.size),
-            SymbolData::Value(token_field) => Some(token_field.parent_info.size.into()),
+            SymbolData::Value { field, .. } => Some(field.parent_info.size.into()),
             SymbolData::VarNode(off_size) => Some(off_size.size),
             _ => None,
         }
@@ -132,10 +134,13 @@ impl SleighContext {
                         for field in fields {
                             ret.symbols.insert(
                                 field.name.to_owned(),
-                                SymbolData::Value(TokenField {
-                                    parent_info: info.clone(),
-                                    field_info: field.clone(),
-                                }),
+                                SymbolData::Value {
+                                    field: TokenField {
+                                        parent_info: info.clone(),
+                                        field_info: field.clone(),
+                                    },
+                                    attached_vars: None,
+                                },
                             );
                         }
                     }
@@ -173,7 +178,17 @@ impl SleighContext {
                     }
                     Definition::ValueAttach(_) => todo!(),
                     Definition::NameAttach(_) => todo!(),
-                    Definition::VarAttach(_) => todo!(),
+                    Definition::VarAttach(var_attach) => {
+                        for field in &var_attach.fields {
+                            if let Some(SymbolData::Value { attached_vars, .. }) =
+                                ret.symbols.get_mut(field)
+                            {
+                                *attached_vars = Some(var_attach.registers.clone());
+                            } else {
+                                panic!("attach variable with missing field")
+                            }
+                        }
+                    }
                 },
                 Def::Constructorlike(constructorlike) => match constructorlike {
                     Constructorlike::Constructor(constructor) => {
@@ -379,10 +394,10 @@ impl SleighContext {
             EllEq(e) => match &e.ell_rt.atomic {
                 Atomic::Constraint(c) => match c {
                     Constraint::Compare(ConstraintCompare { symbol, op, expr }) => {
-                        let symbol = if let SymbolData::Value(tok_field) =
+                        let symbol = if let SymbolData::Value { field, .. } =
                             self.symbols.get(symbol.as_str()).unwrap()
                         {
-                            let FieldDef { high, low, .. } = tok_field.field_info;
+                            let FieldDef { high, low, .. } = field.field_info;
                             bv.extract(high.into(), low.into())
                         } else {
                             panic!()
@@ -454,10 +469,14 @@ impl SleighContext {
     }
 
     fn compute_token_symbol(&self, symbol: &str, input: &[u8]) -> u8 {
-        if let Some(SymbolData::Value(TokenField {
-            field_info: FieldDef { low, high, .. },
+        if let Some(SymbolData::Value {
+            field:
+                TokenField {
+                    field_info: FieldDef { low, high, .. },
+                    ..
+                },
             ..
-        })) = self.symbols.get(symbol)
+        }) = self.symbols.get(symbol)
         {
             compute_bit_range(*input.get(0).unwrap(), *low, *high)
         } else {
@@ -572,10 +591,14 @@ impl SleighContext {
                     todo!()
                 }
             }
-            Some(SymbolData::Value(TokenField {
-                field_info: FieldDef { low, high, .. },
+            Some(SymbolData::Value {
+                field:
+                    TokenField {
+                        field_info: FieldDef { low, high, .. },
+                        ..
+                    },
                 ..
-            })) => {
+            }) => {
                 let b = compute_bit_range(*input.get(off as usize).unwrap(), *low, *high);
                 out.push_str(&format!("{b:#x}"))
             }

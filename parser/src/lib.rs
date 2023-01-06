@@ -446,10 +446,7 @@ fn parse_var_attach(input: &str) -> IResult<&str, VarAttach> {
             pair(identifier_list, identifier_list),
             tok(";"),
         ),
-        |(value_list, string_list)| VarAttach {
-            value_list,
-            string_list,
-        },
+        |(fields, registers)| VarAttach { fields, registers },
     )(input)
 }
 
