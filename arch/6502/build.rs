@@ -3,8 +3,10 @@ use std::io::BufReader;
 use std::path::Path;
 
 fn main() {
+    let spec_path = "6502.slaspec";
     // Generate
-    let file = File::open("6502.slaspec").unwrap();
+    println!("cargo:rerun-if-changed={spec_path}");
+    let file = File::open(spec_path).unwrap();
     let reader = BufReader::new(file);
     let sleigh = sleigh_parser::preprocess(reader);
     let (rest, sleigh) = sleigh_parser::parse_sleigh(&sleigh).unwrap();
