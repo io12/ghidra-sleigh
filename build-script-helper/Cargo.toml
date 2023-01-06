@@ -1,0 +1,12 @@
+[package]
+name = "sleigh-build-script-helper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+sleigh-parser = { path = "../parser" }
+sleigh-types = { path = "../types" }
+sleigh-generator = { path = "../generator" }
+prettyplease = "0.1.22"
+syn = "1.0.107"

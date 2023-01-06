@@ -3,5 +3,6 @@ members = [
     "types",
     "parser",
     "generator",
+    "build-script-helper",
     "arch/6502",
 ]

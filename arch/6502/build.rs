@@ -1,25 +1,3 @@
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
-
 fn main() {
-    let spec_path = "6502.slaspec";
-    // Generate
-    println!("cargo:rerun-if-changed={spec_path}");
-    let file = File::open(spec_path).unwrap();
-    let reader = BufReader::new(file);
-    let sleigh = sleigh_parser::preprocess(reader);
-    let (rest, sleigh) = sleigh_parser::parse_sleigh(&sleigh).unwrap();
-    assert_eq!(rest, "");
-    let ctx = sleigh_types::context::SleighContext::new(&sleigh);
-    let generated = sleigh_generator::RustCodeGenerator::new(&ctx).out();
-
-    // Format
-    let generated = syn::parse_file(&generated.to_string()).unwrap();
-    let generated = prettyplease::unparse(&generated);
-
-    // Write
-    let out_dir = std::env::var_os("OUT_DIR").unwrap();
-    let dest_path = Path::new(&out_dir).join("generated.rs");
-    std::fs::write(dest_path, generated).unwrap();
+    sleigh_build_script_helper::build("6502.slaspec");
 }

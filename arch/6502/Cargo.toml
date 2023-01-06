@@ -5,11 +5,7 @@ edition = "2021"
 publish = false
 
 [build-dependencies]
-sleigh-parser = { path = "../../parser" }
-sleigh-types = { path = "../../types" }
-sleigh-generator = { path = "../../generator" }
-prettyplease = "0.1.22"
-syn = "1.0.107"
+sleigh-build-script-helper = { path = "../../build-script-helper" }
 
 [dev-dependencies]
 disasm6502 = "0.2.2"
