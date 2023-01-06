@@ -1041,6 +1041,9 @@ fn char_name(c: char) -> Option<&'static str> {
         ',' => Some("comma"),
         '(' => Some("open paren"),
         ')' => Some("close paren"),
+        '[' => Some("open bracket"),
+        ']' => Some("close bracket"),
+        '+' => Some("plus"),
         _ => None,
     }
 }
