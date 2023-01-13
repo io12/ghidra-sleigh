@@ -9,6 +9,7 @@ pub fn build(spec_path: &str) {
     let reader = BufReader::new(file);
     let spec_dir = Path::new(spec_path).parent().unwrap();
     let sleigh = sleigh_parser::preprocess(reader, spec_dir);
+    std::fs::write("/tmp/dump/pp", &sleigh).unwrap();
     let (rest, sleigh) = sleigh_parser::parse_sleigh(&sleigh).unwrap();
     assert_eq!(rest, "");
     let ctx = sleigh_types::context::SleighContext::new(&sleigh);

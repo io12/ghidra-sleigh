@@ -72,7 +72,7 @@ pub enum Base {
 
 #[derive(Debug, Clone)]
 pub struct ContextDef {
-    pub var_sym: String,
+    pub var_node: String,
     pub fields: Vec<ContextFieldDef>,
 }
 
@@ -128,14 +128,14 @@ pub struct PCodeOpDef {
 
 #[derive(Debug, Clone)]
 pub struct ValueAttach {
-    pub value_list: Vec<String>,
-    pub int_b_list: Vec<i8>,
+    pub fields: Vec<String>,
+    pub values: Vec<i8>,
 }
 
 #[derive(Debug, Clone)]
 pub struct NameAttach {
-    pub value_list: Vec<String>,
-    pub string_list: Vec<String>,
+    pub fields: Vec<String>,
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,110 +174,147 @@ pub struct Constructor<T> {
     pub rtl_body: RtlBody,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
 pub enum PatternEquationBinOp {
+    #[display(fmt = "&")]
     And,
+    #[display(fmt = "|")]
     Or,
+    #[display(fmt = ";")]
     Cat,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "{l} {op} {r}")]
 pub struct PatternEquationBin<T> {
     pub op: PatternEquationBinOp,
     pub l: PatternEquation<T>,
     pub r: PatternEquation<T>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
 pub enum PatternEquationInner<T> {
+    #[display(fmt = "{_0}")]
     EllEq(Box<EllEq<T>>),
+    #[display(fmt = "({_0})")]
     Bin(Box<PatternEquationBin<T>>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "{inner}")]
 pub struct PatternEquation<T> {
     pub inner: PatternEquationInner<T>,
     pub type_data: T,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "{}{ell_rt}", "if *ellipsis_left { \"... \" } else { \"\" }")]
 pub struct EllEq<T> {
     pub ellipsis_left: bool,
     pub ell_rt: EllRt<T>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "{atomic}{}", "if *ellipsis_right { \" ...\" } else { \"\" }")]
 pub struct EllRt<T> {
     pub atomic: Atomic<T>,
     pub ellipsis_right: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
 pub enum Atomic<T> {
+    #[display(fmt = "{_0}")]
     Constraint(Constraint),
+    #[display(fmt = "({_0})")]
     Parenthesized(PatternEquation<T>),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, derive_more::Display)]
 pub enum ConstraintCompareOp {
+    #[display(fmt = "=")]
     Equal,
+    #[display(fmt = "!=")]
     NotEqual,
+    #[display(fmt = "<")]
     Less,
+    #[display(fmt = "<=")]
     LessEqual,
+    #[display(fmt = ">")]
     Greater,
+    #[display(fmt = ">=")]
     GreaterEqual,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "{symbol} {op} {expr}")]
 pub struct ConstraintCompare {
     pub op: ConstraintCompareOp,
     pub symbol: String,
     pub expr: PExpression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
 pub enum Constraint {
+    #[display(fmt = "{_0}")]
     Compare(ConstraintCompare),
+    #[display(fmt = "{_0}")]
     Symbol(String),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, derive_more::Display)]
 pub enum PExpressionBinOp {
+    #[display(fmt = "+")]
     Add,
+    #[display(fmt = "-")]
     Sub,
+    #[display(fmt = "*")]
     Mult,
+    #[display(fmt = "<<")]
     LeftShift,
+    #[display(fmt = ">>")]
     RightShift,
+    #[display(fmt = "&")]
     And,
+    #[display(fmt = "|")]
     Or,
+    #[display(fmt = "^")]
     Xor,
+    #[display(fmt = "/")]
     Div,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "{l} {op} {r}")]
 pub struct PExpressionBin {
     pub op: PExpressionBinOp,
     pub l: PExpression,
     pub r: PExpression,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, derive_more::Display)]
 pub enum PExpressionUnaryOp {
+    #[display(fmt = "-")]
     Minus,
+    #[display(fmt = "~")]
     Not,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
+#[display(fmt = "{op} {operand}")]
 pub struct PExpressionUnary {
     pub op: PExpressionUnaryOp,
     pub operand: PExpression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, derive_more::Display)]
 pub enum PExpression {
+    #[display(fmt = "{_0}")]
     ConstantValue(u64),
+    #[display(fmt = "{_0}")]
     Symbol(String),
+    #[display(fmt = "({_0})")]
     Bin(Box<PExpressionBin>),
+    #[display(fmt = "{_0}")]
     Unary(Box<PExpressionUnary>),
 }
 

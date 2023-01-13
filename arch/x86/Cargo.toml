@@ -1,0 +1,11 @@
+[package]
+name = "sleigh-x86"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+sleigh-build-script-helper = { path = "../../build-script-helper" }
+
+[dev-dependencies]
+capstone = "0.11.0"

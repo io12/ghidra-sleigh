@@ -919,7 +919,8 @@ impl<'a> RustCodeGenerator<'a> {
                      inner: EnumVariant { qualified_name, .. },
                  }| {
                     let input = quote!(input);
-                    let inst_size = Literal::u64_unsuffixed(ctor.p_equation.type_data.size);
+                    let inst_size =
+                        Literal::u64_unsuffixed(ctor.p_equation.type_data.size.unwrap());
                     let inst_next = if is_mnemonic_enum {
                         quote!(addr + #inst_size)
                     } else {
@@ -980,7 +981,8 @@ impl<'a> RustCodeGenerator<'a> {
                     }
                     InstructionEnumVariant::Unique(CtorEnumVariant { ctor, inner }) => {
                         let input = quote!(input);
-                        let inst_size = Literal::u64_unsuffixed(ctor.p_equation.type_data.size);
+                        let inst_size =
+                            Literal::u64_unsuffixed(ctor.p_equation.type_data.size.expect("TODO"));
                         let inst_next = quote!(addr + #inst_size);
                         (
                             self.gen_check_pattern(&input, &inst_next, &ctor.p_equation),

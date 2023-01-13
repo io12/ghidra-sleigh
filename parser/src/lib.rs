@@ -368,7 +368,7 @@ fn parse_context_def(input: &str) -> IResult<&str, ContextDef> {
             pair(identifier, many1(parse_context_field_def)),
             tok(";"),
         ),
-        |(var_sym, fields)| ContextDef { var_sym, fields },
+        |(var_node, fields)| ContextDef { var_node, fields },
     )(input)
 }
 
@@ -425,10 +425,7 @@ fn parse_value_attach(input: &str) -> IResult<&str, ValueAttach> {
             pair(identifier_list, int_b_list),
             tok(";"),
         ),
-        |(value_list, int_b_list)| ValueAttach {
-            value_list,
-            int_b_list,
-        },
+        |(fields, values)| ValueAttach { fields, values },
     )(input)
 }
 
@@ -439,10 +436,7 @@ fn parse_name_attach(input: &str) -> IResult<&str, NameAttach> {
             pair(identifier_list, any_string_list),
             tok(";"),
         ),
-        |(value_list, string_list)| NameAttach {
-            value_list,
-            string_list,
-        },
+        |(fields, names)| NameAttach { fields, names },
     )(input)
 }
 
