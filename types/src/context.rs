@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    ops::{BitAnd, BitOr},
+};
 
-use bitvec::{bitvec, order::Lsb0, vec::BitVec, view::BitView};
 use itertools::Itertools;
 
 use crate::ast::*;
@@ -295,6 +297,7 @@ impl SleighContext {
         // Sort constructors
         for (name, symbol_data) in &ret.symbols {
             if let SymbolData::Subtable(ctors) = symbol_data {
+                println!("{name}");
                 use petgraph::graph::{Graph, NodeIndex};
 
                 let mut graph = Graph::<usize, ()>::new();
@@ -309,7 +312,6 @@ impl SleighContext {
                     .filter_map(|(n1, n2)| {
                         let peq1 = &ctors[graph[n1]].p_equation;
                         let peq2 = &ctors[graph[n2]].p_equation;
-                        println!("{peq1}     {peq2}");
                         let block1 = ret.peq_to_or_pattern(peq1);
                         let block2 = ret.peq_to_or_pattern(peq2);
                         if block1.subset(block2) && n1 != n2 {
@@ -319,7 +321,6 @@ impl SleighContext {
                         }
                     })
                     .collect::<Vec<(NodeIndex, NodeIndex)>>();
-                dbg!(edges.len());
                 graph.extend_with_edges(edges);
                 let sorted_nodes = match petgraph::algo::toposort(&graph, None) {
                     Ok(sorted) => sorted,
@@ -431,7 +432,6 @@ impl SleighContext {
     }
 
     fn peq_to_or_pattern(&self, peq: &PatternEquation<OffAndSize>) -> OrPattern {
-        println!("recur: {peq}");
         use PatternEquationInner::*;
         match &peq.inner {
             EllEq(ell_eq) => match &ell_eq.ell_rt.atomic {
@@ -472,14 +472,14 @@ impl SleighContext {
                                 SymbolData::Subtable(ctors) => ctors
                                     .iter()
                                     .map(|ctor| self.peq_to_or_pattern(&ctor.p_equation))
-                                    .fold(OrPattern::contradiction(), |acc, pat| acc.or(pat)),
-                                SymbolData::Value { .. } | SymbolData::VarNode { .. } => {
-                                    OrPattern::tautology(
-                                        (self.lookup_symbol_size(symbol).unwrap() * 8)
-                                            .try_into()
-                                            .unwrap(),
-                                    )
-                                }
+                                    .fold(OrPattern::contradiction(), |acc, pat| acc | pat),
+                                SymbolData::Value { .. }
+                                | SymbolData::Context { .. }
+                                | SymbolData::VarNode { .. } => OrPattern::tautology(
+                                    (self.lookup_symbol_size(symbol).unwrap() * 8)
+                                        .try_into()
+                                        .unwrap(),
+                                ),
                                 SymbolData::Epsilon => OrPattern::tautology(0),
                                 _ => todo!("{symbol}"),
                             }
@@ -492,10 +492,9 @@ impl SleighContext {
                 use PatternEquationBinOp::*;
                 let l = self.peq_to_or_pattern(&bin.l);
                 let r = self.peq_to_or_pattern(&bin.r);
-                println!("bin {bin}");
                 match bin.op {
-                    And => l.and(r),
-                    Or => l.or(r),
+                    And => l & r,
+                    Or => l | r,
                     Cat => l.cat(r),
                 }
             }
@@ -703,52 +702,72 @@ fn p_equation_symm_off(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct SmallBitVec {
+    data: bitvec::array::BitArray<[u64; 3]>,
+    len: usize,
+}
+
+impl SmallBitVec {
+    fn new_zeros(len: usize) -> Self {
+        let data = bitvec::array::BitArray::new([0; 3]);
+        assert!(len <= data.len());
+        Self { data, len }
+    }
+
+    fn new_value(value: u64, len: usize) -> Self {
+        let data = bitvec::array::BitArray::new([value, 0, 0]);
+        assert!(len <= data.len());
+        Self { data, len }
+    }
+
+    fn cat(self, mut rhs: Self) -> Self {
+        let len = self.len + rhs.len;
+        assert!(len <= self.data.len(), "{len}");
+        rhs.data.as_mut_bitslice().shift_right(self.len);
+        Self {
+            data: self.data | rhs.data,
+            len: len,
+        }
+    }
+}
+
+impl BitAnd for SmallBitVec {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self {
+            data: self.data & rhs.data,
+            len: self.len.max(rhs.len),
+        }
+    }
+}
+
+impl std::ops::BitOr for SmallBitVec {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self {
+            data: self.data | rhs.data,
+            len: self.len.max(rhs.len),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 enum PatternBlock {
     Contradiction,
-    Block { mask: BitVec, value: BitVec },
+    Block {
+        mask: SmallBitVec,
+        value: SmallBitVec,
+    },
 }
 
 impl PatternBlock {
     fn tautology(num_bits: usize) -> Self {
         Self::Block {
-            mask: bitvec![0; num_bits],
-            value: bitvec![0; num_bits],
-        }
-    }
-
-    fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (_, Self::Contradiction) | (Self::Contradiction, _) => Self::Contradiction,
-            (
-                Self::Block {
-                    mask: mut mask1,
-                    value: mut value1,
-                },
-                Self::Block {
-                    mask: mut mask2,
-                    value: mut value2,
-                },
-            ) => {
-                assert_eq!(mask1.len(), value1.len());
-                assert_eq!(mask2.len(), value2.len());
-                let len = mask1.len().max(mask2.len());
-                mask1.resize(len, false);
-                value1.resize(len, false);
-                mask2.resize(len, false);
-                value2.resize(len, false);
-                let mask_intersection = mask1.clone() & mask2.clone();
-                let masked1 = value1.clone() & mask_intersection.clone();
-                let masked2 = value2.clone() & mask_intersection.clone();
-                if masked1 == masked2 {
-                    Self::Block {
-                        mask: mask1 | mask2,
-                        value: value1 | value2,
-                    }
-                } else {
-                    Self::Contradiction
-                }
-            }
+            mask: SmallBitVec::new_zeros(num_bits),
+            value: SmallBitVec::new_zeros(num_bits),
         }
     }
 
@@ -765,21 +784,16 @@ impl PatternBlock {
                     value: value2,
                 },
             ) => Self::Block {
-                mask: mask1.iter().chain(&mask2).collect(),
-                value: value1.iter().chain(&value2).collect(),
+                mask: mask1.cat(mask2),
+                value: value1.cat(value2),
             },
         }
     }
 
-    fn range_eq(low: u8, high: u8, value: u64) -> Self {
-        let u64_to_bitvec = |v: u64| {
-            let mut bv = BitVec::<usize, Lsb0>::new();
-            bv.extend_from_bitslice(v.view_bits::<Lsb0>());
-            bv
-        };
+    fn range_eq(low: u8, high: u8, size: usize, value: u64) -> Self {
         Self::Block {
-            mask: u64_to_bitvec(compute_mask(low, high)),
-            value: u64_to_bitvec(value << low),
+            mask: SmallBitVec::new_value(compute_mask(low, high), size),
+            value: SmallBitVec::new_value(value << low, size),
         }
     }
 
@@ -796,9 +810,40 @@ impl PatternBlock {
                     mask: mask2,
                     value: value2,
                 },
+            ) => mask1 & mask2 == mask2 && value1 & mask2 == value2 & mask2,
+        }
+    }
+}
+
+impl BitAnd for PatternBlock {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (_, Self::Contradiction) | (Self::Contradiction, _) => Self::Contradiction,
+            (
+                Self::Block {
+                    mask: mask1,
+                    value: value1,
+                },
+                Self::Block {
+                    mask: mask2,
+                    value: value2,
+                },
             ) => {
-                mask1 & mask2.as_bitslice() == mask2
-                    && value1 & mask2.as_bitslice() == value2 & mask2
+                assert_eq!(mask1.len, value1.len);
+                assert_eq!(mask2.len, value2.len);
+                let mask_intersection = mask1.clone() & mask2.clone();
+                let masked1 = value1.clone() & mask_intersection.clone();
+                let masked2 = value2.clone() & mask_intersection.clone();
+                if masked1 == masked2 {
+                    Self::Block {
+                        mask: mask1 | mask2,
+                        value: value1 | value2,
+                    }
+                } else {
+                    Self::Contradiction
+                }
             }
         }
     }
@@ -818,13 +863,6 @@ impl CombinedPattern {
         }
     }
 
-    fn and(self, other: Self) -> Self {
-        CombinedPattern {
-            instruction: self.instruction.and(other.instruction),
-            context: self.context.and(other.context),
-        }
-    }
-
     fn cat(self, other: Self) -> Self {
         CombinedPattern {
             instruction: self.instruction.cat(other.instruction),
@@ -835,7 +873,7 @@ impl CombinedPattern {
     fn range_eq(field_info: FieldInfo, value: u64) -> Self {
         let FieldInfo { low, high, context } = field_info;
         let num_bits = usize::from(high + 1);
-        let block = PatternBlock::range_eq(low, high, value);
+        let block = PatternBlock::range_eq(low, high, num_bits, value);
         if context {
             Self {
                 instruction: PatternBlock::tautology(num_bits),
@@ -854,33 +892,23 @@ impl CombinedPattern {
     }
 }
 
+impl BitAnd for CombinedPattern {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        CombinedPattern {
+            instruction: self.instruction & rhs.instruction,
+            context: self.context & rhs.context,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct OrPattern {
     disjoint_patterns: Vec<CombinedPattern>,
 }
 
 impl OrPattern {
-    fn and(self, other: Self) -> Self {
-        Self {
-            disjoint_patterns: self
-                .disjoint_patterns
-                .into_iter()
-                .cartesian_product(other.disjoint_patterns.into_iter())
-                .map(|(a, b)| a.and(b))
-                .collect::<Vec<CombinedPattern>>(),
-        }
-    }
-
-    fn or(self, other: Self) -> Self {
-        Self {
-            disjoint_patterns: self
-                .disjoint_patterns
-                .into_iter()
-                .chain(other.disjoint_patterns)
-                .collect(),
-        }
-    }
-
     fn cat(self, other: Self) -> Self {
         Self {
             disjoint_patterns: self
@@ -926,6 +954,35 @@ impl OrPattern {
     fn contradiction() -> Self {
         Self {
             disjoint_patterns: vec![],
+        }
+    }
+}
+
+impl BitAnd for OrPattern {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self {
+            disjoint_patterns: self
+                .disjoint_patterns
+                .into_iter()
+                .cartesian_product(rhs.disjoint_patterns.into_iter())
+                .map(|(a, b)| a & b)
+                .collect::<Vec<CombinedPattern>>(),
+        }
+    }
+}
+
+impl BitOr for OrPattern {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self {
+            disjoint_patterns: self
+                .disjoint_patterns
+                .into_iter()
+                .chain(rhs.disjoint_patterns)
+                .collect(),
         }
     }
 }
