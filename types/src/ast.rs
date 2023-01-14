@@ -51,6 +51,7 @@ pub struct TokenDef {
 #[derive(Debug, Clone)]
 pub struct TokenParentInfo {
     pub name: String,
+    /// Size in bits
     pub size: u8,
     pub endian: Option<Endian>,
 }
@@ -243,6 +244,20 @@ pub enum ConstraintCompareOp {
     Greater,
     #[display(fmt = ">=")]
     GreaterEqual,
+}
+
+impl ConstraintCompareOp {
+    pub fn call<T: Eq + Ord>(self, a: T, b: T) -> bool {
+        use ConstraintCompareOp::*;
+        match self {
+            Equal => a == b,
+            NotEqual => a != b,
+            Less => a < b,
+            LessEqual => a <= b,
+            Greater => a > b,
+            GreaterEqual => a >= b,
+        }
+    }
 }
 
 #[derive(Debug, Clone, derive_more::Display)]

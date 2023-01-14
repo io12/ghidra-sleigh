@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use bitvec::{order::Lsb0, vec::BitVec, view::BitView};
+use bitvec::{bitvec, order::Lsb0, vec::BitVec, view::BitView};
+use itertools::Itertools;
 
 use crate::ast::*;
 
@@ -105,12 +106,6 @@ pub enum SymbolData {
     Bit,
 }
 
-struct FieldInfo {
-    low: u8,
-    high: u8,
-    context: bool,
-}
-
 pub struct SleighContext {
     pub endian: Endian,
     align: u8,
@@ -127,7 +122,7 @@ impl SleighContext {
                 SymbolData::Subtable(c) => {
                     Some(c.get(0).unwrap().p_equation.type_data.size.unwrap())
                 }
-                SymbolData::Value { field, .. } => Some(field.parent_info.size.into()),
+                SymbolData::Value { field, .. } => Some((field.parent_info.size / 8).into()),
                 SymbolData::VarNode { size, .. } => Some(*size),
                 SymbolData::Context { var_node, .. } => {
                     if let SymbolData::VarNode { size, .. } = self.symbols.get(var_node).unwrap() {
@@ -298,21 +293,10 @@ impl SleighContext {
         let mut table = HashMap::<String, Vec<Constructor<OffAndSize>>>::new();
 
         // Sort constructors
-        let mut z3cfg = z3::Config::new();
-        z3cfg.set_proof_generation(false);
-        z3cfg.set_model_generation(false);
-        z3cfg.set_timeout_msec(1000);
-        let z3ctx = z3::Context::new(&z3cfg);
         for (name, symbol_data) in &ret.symbols {
             if let SymbolData::Subtable(ctors) = symbol_data {
-                use itertools::Itertools;
                 use petgraph::graph::{Graph, NodeIndex};
 
-                let max_size = ctors
-                    .iter()
-                    .filter_map(|ctor| ctor.p_equation.type_data.size)
-                    .max()
-                    .unwrap();
                 let mut graph = Graph::<usize, ()>::new();
                 let nodes = (0..ctors.len())
                     .into_iter()
@@ -323,40 +307,15 @@ impl SleighContext {
                     .cloned()
                     .cartesian_product(nodes.iter().cloned())
                     .filter_map(|(n1, n2)| {
-                        if n1 == n2 {
-                            return None;
-                        }
                         let peq1 = &ctors[graph[n1]].p_equation;
                         let peq2 = &ctors[graph[n2]].p_equation;
-                        if let (Some(block1), Some(block2)) = (
-                            ret.peq_to_combined_pattern(peq1),
-                            ret.peq_to_combined_pattern(peq2),
-                        ) {
-                            return if block1.subset(block2) {
-                                Some((n1, n2))
-                            } else {
-                                None
-                            };
-                        }
                         println!("{peq1}     {peq2}");
-                        let bv = z3::ast::BV::new_const(
-                            &z3ctx,
-                            "input",
-                            (max_size * 8).try_into().unwrap(),
-                        );
-                        let p1 = ret.peq_to_z3(&z3ctx, &bv, &peq1);
-                        let p2 = ret.peq_to_z3(&z3ctx, &bv, &peq2);
-                        let subset = z3::ast::forall_const(&z3ctx, &[&bv], &[], &p1.implies(&p2));
-                        let superset = z3::ast::forall_const(&z3ctx, &[&bv], &[], &p2.implies(&p1));
-                        let proper_subset = z3::ast::Bool::and(&z3ctx, &[&subset, &superset.not()]);
-                        let solver = z3::Solver::new(&z3ctx);
-                        solver.assert(&proper_subset);
-                        let result = solver.check();
-                        println!("{proper_subset} {result:?} {n1:?} {n2:?}");
-                        match result {
-                            z3::SatResult::Unsat => None,
-                            z3::SatResult::Unknown => panic!(),
-                            z3::SatResult::Sat => Some((n1, n2)),
+                        let block1 = ret.peq_to_or_pattern(peq1);
+                        let block2 = ret.peq_to_or_pattern(peq2);
+                        if block1.subset(block2) && n1 != n2 {
+                            Some((n1, n2))
+                        } else {
+                            None
                         }
                     })
                     .collect::<Vec<(NodeIndex, NodeIndex)>>();
@@ -471,10 +430,8 @@ impl SleighContext {
         }
     }
 
-    fn peq_to_combined_pattern(
-        &self,
-        peq: &PatternEquation<OffAndSize>,
-    ) -> Option<CombinedPattern> {
+    fn peq_to_or_pattern(&self, peq: &PatternEquation<OffAndSize>) -> OrPattern {
+        println!("recur: {peq}");
         use PatternEquationInner::*;
         match &peq.inner {
             EllEq(ell_eq) => match &ell_eq.ell_rt.atomic {
@@ -486,133 +443,78 @@ impl SleighContext {
                                 op: Equal,
                                 symbol,
                                 expr: PExpression::ConstantValue(value),
-                            } => Some(CombinedPattern::range_eq(
-                                self.lookup_field(symbol).unwrap(),
-                                *value,
-                            )),
-                            _ => None,
+                            } => OrPattern::range_eq(self.lookup_field(symbol), *value),
+                            ConstraintCompare {
+                                op: Equal,
+                                symbol,
+                                expr: PExpression::Symbol(right_symbol),
+                            } if symbol == right_symbol => OrPattern::tautology(
+                                (self.lookup_symbol_size(symbol).unwrap() * 8)
+                                    .try_into()
+                                    .unwrap(),
+                            ),
+                            ConstraintCompare {
+                                op,
+                                symbol,
+                                expr: PExpression::ConstantValue(value),
+                            } => OrPattern::range_op(self.lookup_field(symbol), *value, *op),
+                            _ => todo!("{cmp}"),
                         }
                     }
-                    Constraint::Symbol(_) => Some(CombinedPattern::default()),
+                    Constraint::Symbol(symbol) => {
+                        // The root instruction table can be recursive,
+                        // so it needs to be special-cased to prevent an
+                        // infinite recursion bug
+                        if symbol == INSTRUCTION {
+                            OrPattern::tautology(0)
+                        } else {
+                            match self.symbols.get(symbol).unwrap() {
+                                SymbolData::Subtable(ctors) => ctors
+                                    .iter()
+                                    .map(|ctor| self.peq_to_or_pattern(&ctor.p_equation))
+                                    .fold(OrPattern::contradiction(), |acc, pat| acc.or(pat)),
+                                SymbolData::Value { .. } | SymbolData::VarNode { .. } => {
+                                    OrPattern::tautology(
+                                        (self.lookup_symbol_size(symbol).unwrap() * 8)
+                                            .try_into()
+                                            .unwrap(),
+                                    )
+                                }
+                                SymbolData::Epsilon => OrPattern::tautology(0),
+                                _ => todo!("{symbol}"),
+                            }
+                        }
+                    }
                 },
-                Atomic::Parenthesized(peq) => self.peq_to_combined_pattern(peq),
+                Atomic::Parenthesized(peq) => self.peq_to_or_pattern(peq),
             },
             Bin(bin) => {
                 use PatternEquationBinOp::*;
-                let l = self.peq_to_combined_pattern(&bin.l)?;
-                let r = self.peq_to_combined_pattern(&bin.r)?;
+                let l = self.peq_to_or_pattern(&bin.l);
+                let r = self.peq_to_or_pattern(&bin.r);
+                println!("bin {bin}");
                 match bin.op {
                     And => l.and(r),
-                    Or => None,
-                    Cat => Some(l.cat(r)),
+                    Or => l.or(r),
+                    Cat => l.cat(r),
                 }
             }
         }
     }
 
-    fn lookup_field(&self, symbol: &str) -> Option<FieldInfo> {
-        match self.symbols.get(symbol)? {
-            SymbolData::Value { field, .. } => Some(FieldInfo {
+    fn lookup_field(&self, symbol: &str) -> FieldInfo {
+        match self.symbols.get(symbol).unwrap() {
+            SymbolData::Value { field, .. } => FieldInfo {
                 low: field.field_info.low,
                 high: field.field_info.high,
                 context: false,
-            }),
-            SymbolData::Context { field, .. } => Some(FieldInfo {
+            },
+            SymbolData::Context { field, .. } => FieldInfo {
                 low: field.low,
                 high: field.high,
                 context: true,
-            }),
-            _ => None,
-        }
-    }
-
-    fn symbol_to_z3<'z>(&self, bv: &z3::ast::BV<'z>, symbol: &str) -> z3::ast::BV<'z> {
-        let FieldInfo { high, low, .. } = self.lookup_field(symbol).unwrap();
-        bv.extract(high.into(), low.into())
-    }
-
-    fn peq_to_z3<'z>(
-        &self,
-        z3ctx: &'z z3::Context,
-        bv: &z3::ast::BV<'z>,
-        peq: &PatternEquation<OffAndSize>,
-    ) -> z3::ast::Bool<'z> {
-        use z3::ast::Ast;
-        use ConstraintCompareOp::*;
-        use PatternEquationInner::*;
-        match &peq.inner {
-            EllEq(e) => match &e.ell_rt.atomic {
-                Atomic::Constraint(c) => match c {
-                    Constraint::Compare(ConstraintCompare { symbol, op, expr }) => {
-                        let bv = bv.extract(
-                            (peq.type_data.off + peq.type_data.size.unwrap()) as u32 * 8 - 1,
-                            peq.type_data.off as u32 * 8,
-                        );
-                        let symbol = self.symbol_to_z3(&bv, symbol);
-                        let expr = self.pexpr_to_z3(z3ctx, &bv, symbol.get_size(), &expr);
-                        match op {
-                            Equal => symbol._eq(&expr),
-                            NotEqual => !symbol._eq(&expr),
-                            Less => symbol.bvult(&expr),
-                            LessEqual => symbol.bvule(&expr),
-                            Greater => symbol.bvugt(&expr),
-                            GreaterEqual => symbol.bvuge(&expr),
-                        }
-                    }
-                    Constraint::Symbol(_) => z3::ast::Bool::from_bool(z3ctx, true),
-                },
-                Atomic::Parenthesized(peq) => self.peq_to_z3(z3ctx, bv, &peq),
             },
-            Bin(bin) => {
-                use PatternEquationBinOp::*;
-                let PatternEquationBin { op, l, r } = &**bin;
-                let l = self.peq_to_z3(z3ctx, bv, l);
-                let r = self.peq_to_z3(z3ctx, bv, r);
-                match op {
-                    And | Cat => l & r,
-                    Or => l | r,
-                }
-            }
-        }
-    }
-
-    fn pexpr_to_z3<'z>(
-        &self,
-        z3ctx: &'z z3::Context,
-        bv: &z3::ast::BV<'z>,
-        bit_width: u32,
-        e: &PExpression,
-    ) -> z3::ast::BV<'z> {
-        use PExpression::*;
-        match e {
-            ConstantValue(v) => z3::ast::BV::from_u64(z3ctx, *v, bit_width),
-            Symbol(symbol) => self.symbol_to_z3(bv, symbol),
-            Bin(bin) => {
-                use PExpressionBinOp::*;
-                let PExpressionBin { op, l, r } = &**bin;
-                let l = self.pexpr_to_z3(z3ctx, bv, bit_width, l);
-                let r = self.pexpr_to_z3(z3ctx, bv, bit_width, r);
-                match op {
-                    Add => l + r,
-                    Sub => l - r,
-                    Mult => l * r,
-                    LeftShift => l.bvshl(&r),
-                    RightShift => l.bvlshr(&r),
-                    And => l & r,
-                    Or => l | r,
-                    Xor => l ^ r,
-                    Div => l.bvudiv(&r),
-                }
-            }
-            Unary(unary) => {
-                use PExpressionUnaryOp::*;
-                let PExpressionUnary { op, operand } = &**unary;
-                let operand = self.pexpr_to_z3(z3ctx, bv, bit_width, operand);
-                match op {
-                    Minus => -operand,
-                    Not => !operand,
-                }
-            }
+            _ => panic!(),
         }
     }
 
@@ -685,14 +587,7 @@ impl SleighContext {
                             let l = self.compute_token_symbol(&symbol, input);
                             let r = self.compute_p_expression(&expr);
                             let l = l as u64;
-                            match op {
-                                ConstraintCompareOp::Equal => l == r,
-                                ConstraintCompareOp::NotEqual => l != r,
-                                ConstraintCompareOp::Less => l < r,
-                                ConstraintCompareOp::LessEqual => l <= r,
-                                ConstraintCompareOp::Greater => l > r,
-                                ConstraintCompareOp::GreaterEqual => l >= r,
-                            }
+                            op.call(l, r)
                         }
                         Constraint::Symbol(_) => true,
                     },
@@ -808,30 +703,71 @@ fn p_equation_symm_off(
     }
 }
 
-#[derive(Default)]
-struct PatternBlock {
-    mask: BitVec,
-    value: BitVec,
+#[derive(Debug, Clone)]
+enum PatternBlock {
+    Contradiction,
+    Block { mask: BitVec, value: BitVec },
 }
 
 impl PatternBlock {
-    fn and(self, other: Self) -> Option<Self> {
-        let mask_intersection = self.mask.clone() & other.mask.clone();
-        if self.value.clone() & mask_intersection.clone() == other.value.clone() & mask_intersection
-        {
-            Some(Self {
-                mask: self.mask | other.mask,
-                value: self.value | other.value,
-            })
-        } else {
-            None
+    fn tautology(num_bits: usize) -> Self {
+        Self::Block {
+            mask: bitvec![0; num_bits],
+            value: bitvec![0; num_bits],
+        }
+    }
+
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (_, Self::Contradiction) | (Self::Contradiction, _) => Self::Contradiction,
+            (
+                Self::Block {
+                    mask: mut mask1,
+                    value: mut value1,
+                },
+                Self::Block {
+                    mask: mut mask2,
+                    value: mut value2,
+                },
+            ) => {
+                assert_eq!(mask1.len(), value1.len());
+                assert_eq!(mask2.len(), value2.len());
+                let len = mask1.len().max(mask2.len());
+                mask1.resize(len, false);
+                value1.resize(len, false);
+                mask2.resize(len, false);
+                value2.resize(len, false);
+                let mask_intersection = mask1.clone() & mask2.clone();
+                let masked1 = value1.clone() & mask_intersection.clone();
+                let masked2 = value2.clone() & mask_intersection.clone();
+                if masked1 == masked2 {
+                    Self::Block {
+                        mask: mask1 | mask2,
+                        value: value1 | value2,
+                    }
+                } else {
+                    Self::Contradiction
+                }
+            }
         }
     }
 
     fn cat(self, other: Self) -> Self {
-        Self {
-            mask: self.mask.iter().chain(&other.mask).collect(),
-            value: self.value.iter().chain(&other.value).collect(),
+        match (self, other) {
+            (_, Self::Contradiction) | (Self::Contradiction, _) => Self::Contradiction,
+            (
+                Self::Block {
+                    mask: mask1,
+                    value: value1,
+                },
+                Self::Block {
+                    mask: mask2,
+                    value: value2,
+                },
+            ) => Self::Block {
+                mask: mask1.iter().chain(&mask2).collect(),
+                value: value1.iter().chain(&value2).collect(),
+            },
         }
     }
 
@@ -841,30 +777,52 @@ impl PatternBlock {
             bv.extend_from_bitslice(v.view_bits::<Lsb0>());
             bv
         };
-        Self {
+        Self::Block {
             mask: u64_to_bitvec(compute_mask(low, high)),
             value: u64_to_bitvec(value << low),
         }
     }
 
     fn subset(self, other: Self) -> bool {
-        self.mask & other.mask.as_bitslice() == other.mask
-            && self.value & other.mask.as_bitslice() == other.value & other.mask
+        match (self, other) {
+            (Self::Block { .. }, Self::Contradiction) => false,
+            (Self::Contradiction, _) => true,
+            (
+                PatternBlock::Block {
+                    mask: mask1,
+                    value: value1,
+                },
+                PatternBlock::Block {
+                    mask: mask2,
+                    value: value2,
+                },
+            ) => {
+                mask1 & mask2.as_bitslice() == mask2
+                    && value1 & mask2.as_bitslice() == value2 & mask2
+            }
+        }
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone)]
 struct CombinedPattern {
     instruction: PatternBlock,
     context: PatternBlock,
 }
 
 impl CombinedPattern {
-    fn and(self, other: Self) -> Option<Self> {
-        Some(CombinedPattern {
-            instruction: self.instruction.and(other.instruction)?,
-            context: self.context.and(other.context)?,
-        })
+    fn tautology(num_bits: usize) -> Self {
+        Self {
+            instruction: PatternBlock::tautology(num_bits),
+            context: PatternBlock::tautology(num_bits),
+        }
+    }
+
+    fn and(self, other: Self) -> Self {
+        CombinedPattern {
+            instruction: self.instruction.and(other.instruction),
+            context: self.context.and(other.context),
+        }
     }
 
     fn cat(self, other: Self) -> Self {
@@ -876,21 +834,115 @@ impl CombinedPattern {
 
     fn range_eq(field_info: FieldInfo, value: u64) -> Self {
         let FieldInfo { low, high, context } = field_info;
+        let num_bits = usize::from(high + 1);
         let block = PatternBlock::range_eq(low, high, value);
         if context {
             Self {
-                instruction: Default::default(),
+                instruction: PatternBlock::tautology(num_bits),
                 context: block,
             }
         } else {
             Self {
                 instruction: block,
-                context: Default::default(),
+                context: PatternBlock::tautology(num_bits),
             }
         }
     }
 
     fn subset(self, other: Self) -> bool {
         self.instruction.subset(other.instruction) && self.context.subset(other.context)
+    }
+}
+
+#[derive(Debug)]
+struct OrPattern {
+    disjoint_patterns: Vec<CombinedPattern>,
+}
+
+impl OrPattern {
+    fn and(self, other: Self) -> Self {
+        Self {
+            disjoint_patterns: self
+                .disjoint_patterns
+                .into_iter()
+                .cartesian_product(other.disjoint_patterns.into_iter())
+                .map(|(a, b)| a.and(b))
+                .collect::<Vec<CombinedPattern>>(),
+        }
+    }
+
+    fn or(self, other: Self) -> Self {
+        Self {
+            disjoint_patterns: self
+                .disjoint_patterns
+                .into_iter()
+                .chain(other.disjoint_patterns)
+                .collect(),
+        }
+    }
+
+    fn cat(self, other: Self) -> Self {
+        Self {
+            disjoint_patterns: self
+                .disjoint_patterns
+                .into_iter()
+                .zip(other.disjoint_patterns.into_iter())
+                .map(|(a, b)| a.cat(b))
+                .collect(),
+        }
+    }
+
+    fn range_eq(field_info: FieldInfo, value: u64) -> Self {
+        Self {
+            disjoint_patterns: vec![CombinedPattern::range_eq(field_info, value)],
+        }
+    }
+
+    fn range_op(field_info: FieldInfo, value: u64, op: ConstraintCompareOp) -> Self {
+        Self {
+            disjoint_patterns: (0..=field_info.max_value())
+                .filter(|v| op.call(*v, value))
+                .map(|value| CombinedPattern::range_eq(field_info, value))
+                .collect(),
+        }
+    }
+
+    fn subset(self, other: Self) -> bool {
+        self.disjoint_patterns.into_iter().all(|a| {
+            other
+                .disjoint_patterns
+                .clone()
+                .into_iter()
+                .any(|b| a.clone().subset(b))
+        })
+    }
+
+    fn tautology(num_bits: usize) -> Self {
+        Self {
+            disjoint_patterns: vec![CombinedPattern::tautology(num_bits)],
+        }
+    }
+
+    fn contradiction() -> Self {
+        Self {
+            disjoint_patterns: vec![],
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+struct FieldInfo {
+    low: u8,
+    high: u8,
+    context: bool,
+}
+
+impl FieldInfo {
+    fn num_bits(self) -> u8 {
+        self.high - self.low + 1
+    }
+
+    fn max_value(self) -> u64 {
+        (1u64 << self.num_bits()) - 1
     }
 }

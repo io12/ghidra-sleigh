@@ -9,5 +9,4 @@ bitvec = "1.0.1"
 derive_more = "0.99.17"
 itertools = "0.10.5"
 petgraph = "0.6.2"
-z3 = "0.11.2"
 
