@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::{BitAnd, BitOr},
 };
 
@@ -297,43 +297,8 @@ impl SleighContext {
         // Sort constructors
         for (name, symbol_data) in &ret.symbols {
             if let SymbolData::Subtable(ctors) = symbol_data {
-                println!("{name}");
-                use petgraph::graph::{Graph, NodeIndex};
-
-                let mut graph = Graph::<usize, ()>::new();
-                let nodes = (0..ctors.len())
-                    .into_iter()
-                    .map(|i| graph.add_node(i))
-                    .collect::<Vec<NodeIndex>>();
-                let edges = nodes
-                    .iter()
-                    .cloned()
-                    .cartesian_product(nodes.iter().cloned())
-                    .filter_map(|(n1, n2)| {
-                        let peq1 = &ctors[graph[n1]].p_equation;
-                        let peq2 = &ctors[graph[n2]].p_equation;
-                        let block1 = ret.peq_to_or_pattern(peq1);
-                        let block2 = ret.peq_to_or_pattern(peq2);
-                        if block1.subset(block2) && n1 != n2 {
-                            Some((n1, n2))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<(NodeIndex, NodeIndex)>>();
-                graph.extend_with_edges(edges);
-                let sorted_nodes = match petgraph::algo::toposort(&graph, None) {
-                    Ok(sorted) => sorted,
-                    Err(_) => panic!("cycle at {name}, {graph:#?}"),
-                };
-                assert_eq!(sorted_nodes.len(), ctors.len());
-                let ctors = sorted_nodes
-                    .iter()
-                    .cloned()
-                    .map(|n| &ctors[graph[n]])
-                    .cloned()
-                    .collect::<Vec<Constructor<OffAndSize>>>();
-                table.insert(name.to_string(), ctors.clone());
+                let ctors = ret.sort_ctors(ctors);
+                table.insert(name.to_string(), ctors);
             }
         }
 
@@ -429,6 +394,101 @@ impl SleighContext {
                 }
             }
         }
+    }
+
+    fn sort_patterns(
+        &self,
+        patterns: &[(CombinedPattern, usize)],
+    ) -> Vec<(CombinedPattern, usize)> {
+        let cut: Option<(usize, bool)> = (0..)
+            .cartesian_product([false, true])
+            .take_while(|(bit_index, context)| {
+                patterns
+                    .iter()
+                    .any(|(pattern, _)| pattern.get_bit_value(*bit_index, *context).is_some())
+            })
+            .find(|(bit_index, context)| {
+                [false, true].into_iter().all(|bit_value| {
+                    patterns.iter().any(|(pattern, _)| {
+                        pattern.get_bit_value(*bit_index, *context) == Some(bit_value)
+                    })
+                })
+            });
+        match cut {
+            Some((bit_index, context)) => [Some(false), Some(true), None]
+                .into_iter()
+                .flat_map(|bit_value| {
+                    patterns.iter().filter(move |(pattern, _)| {
+                        pattern.get_bit_value(bit_index, context) == bit_value
+                    })
+                })
+                .copied()
+                .collect(),
+            None => {
+                use petgraph::{
+                    algo::toposort,
+                    graph::{Graph, NodeIndex},
+                };
+                let mut graph = Graph::<usize, ()>::new();
+                let nodes = (0..patterns.len())
+                    .into_iter()
+                    .map(|i| graph.add_node(i))
+                    .collect::<Vec<NodeIndex>>();
+                let edges = nodes
+                    .iter()
+                    .cloned()
+                    .cartesian_product(nodes.iter().cloned())
+                    .filter_map(|(n1, n2)| {
+                        let block1 = patterns[graph[n1]].0;
+                        let block2 = patterns[graph[n2]].0;
+                        if block1.proper_subset(block2) {
+                            Some((n1, n2))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<(NodeIndex, NodeIndex)>>();
+                graph.extend_with_edges(edges);
+                let sorted_nodes = match toposort(&graph, None) {
+                    Ok(sorted) => sorted,
+                    Err(err) => panic!("{err:?}\n{patterns:#?}\n{graph:#?}"),
+                };
+                assert_eq!(sorted_nodes.len(), patterns.len());
+                let patterns = sorted_nodes
+                    .iter()
+                    .cloned()
+                    .map(|n| &patterns[graph[n]])
+                    .cloned()
+                    .collect::<Vec<(CombinedPattern, usize)>>();
+                patterns
+            }
+        }
+    }
+
+    fn sort_ctors(&self, ctors: &[Constructor<OffAndSize>]) -> Vec<Constructor<OffAndSize>> {
+        let patterns = ctors
+            .iter()
+            .enumerate()
+            .flat_map(|(i, ctor)| {
+                self.peq_to_or_pattern(&ctor.p_equation)
+                    .disjoint_patterns
+                    .iter()
+                    .copied()
+                    .map(move |pattern| (pattern, i))
+                    .collect::<Vec<(CombinedPattern, usize)>>()
+            })
+            .collect::<Vec<(CombinedPattern, usize)>>();
+        let patterns = self.sort_patterns(&patterns);
+        let mut visited_ctors = HashSet::<usize>::new();
+        let mut out_ctors = Vec::new();
+        for (_, ctor_index) in patterns.into_iter().rev() {
+            if !visited_ctors.contains(&ctor_index) {
+                visited_ctors.insert(ctor_index);
+                out_ctors.push(ctors[ctor_index].clone());
+            }
+        }
+        out_ctors.reverse();
+        out_ctors
     }
 
     fn peq_to_or_pattern(&self, peq: &PatternEquation<OffAndSize>) -> OrPattern {
@@ -702,7 +762,7 @@ fn p_equation_symm_off(
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 struct SmallBitVec {
     data: bitvec::array::BitArray<[u64; 3]>,
     len: usize,
@@ -721,13 +781,21 @@ impl SmallBitVec {
         Self { data, len }
     }
 
+    fn get(self, index: usize) -> Option<bool> {
+        if index < self.len {
+            self.data.get(index).as_deref().copied()
+        } else {
+            None
+        }
+    }
+
     fn cat(self, mut rhs: Self) -> Self {
         let len = self.len + rhs.len;
         assert!(len <= self.data.len(), "{len}");
         rhs.data.as_mut_bitslice().shift_right(self.len);
         Self {
             data: self.data | rhs.data,
-            len: len,
+            len,
         }
     }
 }
@@ -754,7 +822,17 @@ impl std::ops::BitOr for SmallBitVec {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+impl std::fmt::Debug for SmallBitVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for i in 0..self.len {
+            let bit = if self.data[i] { 1 } else { 0 };
+            write!(f, "{bit}")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum PatternBlock {
     Contradiction,
     Block {
@@ -794,6 +872,19 @@ impl PatternBlock {
         Self::Block {
             mask: SmallBitVec::new_value(compute_mask(low, high), size),
             value: SmallBitVec::new_value(value << low, size),
+        }
+    }
+
+    fn get_bit_value(self, bit: usize) -> Option<bool> {
+        match self {
+            Self::Contradiction => None,
+            Self::Block { mask, value } => {
+                if mask.get(bit)? {
+                    value.get(bit)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -849,7 +940,7 @@ impl BitAnd for PatternBlock {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct CombinedPattern {
     instruction: PatternBlock,
     context: PatternBlock,
@@ -887,8 +978,20 @@ impl CombinedPattern {
         }
     }
 
+    fn get_bit_value(self, bit: usize, context: bool) -> Option<bool> {
+        if context {
+            self.context.get_bit_value(bit)
+        } else {
+            self.instruction.get_bit_value(bit)
+        }
+    }
+
     fn subset(self, other: Self) -> bool {
         self.instruction.subset(other.instruction) && self.context.subset(other.context)
+    }
+
+    fn proper_subset(self, other: Self) -> bool {
+        self.subset(other) && self != other
     }
 }
 
