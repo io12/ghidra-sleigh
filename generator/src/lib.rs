@@ -196,7 +196,7 @@ fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
         .iter()
         .map(|constructor| match constructor.display.toks.as_slice() {
             [DisplayToken::Symbol(mnemonic), ..] => (mnemonic, constructor),
-            _ => panic!("instruction has no mnemonic"),
+            _ => panic!("instruction has no mnemonic: {}", constructor.display),
         })
         .map(|(mnemonic, constructor)| (symbol_to_type_ident(&mnemonic), constructor));
     collect_to_map_vec(iter)
