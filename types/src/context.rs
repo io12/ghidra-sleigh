@@ -77,7 +77,6 @@ pub enum SymbolData {
     ///
     /// `define context VAR_NODE NAME=`
     Context {
-        var_node: String,
         field: ContextFieldDef,
         attached: Option<Attach>,
     },
@@ -111,6 +110,7 @@ pub enum SymbolData {
 pub struct SleighContext {
     pub endian: Endian,
     align: u8,
+    pub context_var_node: Option<String>,
     pub symbols: HashMap<String, SymbolData>,
     pub default_space: SpaceDef,
 }
@@ -126,8 +126,12 @@ impl SleighContext {
                 }
                 SymbolData::Value { field, .. } => Some((field.parent_info.size / 8).into()),
                 SymbolData::VarNode { size, .. } => Some(*size),
-                SymbolData::Context { var_node, .. } => {
-                    if let SymbolData::VarNode { size, .. } = self.symbols.get(var_node).unwrap() {
+                SymbolData::Context { .. } => {
+                    if let SymbolData::VarNode { size, .. } = self
+                        .symbols
+                        .get(self.context_var_node.as_ref().unwrap())
+                        .unwrap()
+                    {
                         Some(*size)
                     } else {
                         panic!("context var node is not a var node")
@@ -143,6 +147,7 @@ impl SleighContext {
         let mut ret = SleighContext {
             endian: Endian::Little,
             align: 0,
+            context_var_node: None,
             symbols: HashMap::new(),
             default_space: SpaceDef {
                 name: String::new(),
@@ -181,11 +186,12 @@ impl SleighContext {
                         }
                     }
                     Definition::ContextDef(ContextDef { var_node, fields }) => {
+                        assert!(ret.context_var_node.is_none());
+                        ret.context_var_node = Some(var_node.clone());
                         for field in fields {
                             ret.symbols.insert(
                                 field.name.to_owned(),
                                 SymbolData::Context {
-                                    var_node: var_node.clone(),
                                     field: field.clone(),
                                     attached: None,
                                 },

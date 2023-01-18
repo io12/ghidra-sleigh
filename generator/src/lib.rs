@@ -17,6 +17,7 @@ type RootTable<'a> = BTreeMap<Ident, Vec<&'a Constructor<OffAndSize>>>;
 
 pub struct RustCodeGenerator<'a> {
     ctx: &'a SleighContext,
+    context_int_type: Option<Ident>,
     token_fields: BTreeMap<&'a str, TokenFieldData>,
     non_root_sing_ctors: BTreeMap<&'a str, NonRootSingletonConstructor<'a>>,
     non_root_mult_ctors: BTreeMap<&'a str, MultiConstructor<'a>>,
@@ -215,6 +216,13 @@ fn make_int_type(bytes: u8, signed: bool) -> Ident {
     format_ident!("{sign}{bits}")
 }
 
+fn make_context_int_type(ctx: &SleighContext) -> Option<Ident> {
+    match ctx.symbols.get(ctx.context_var_node.as_ref()?).unwrap() {
+        SymbolData::VarNode { size, .. } => Some(make_int_type((*size).try_into().unwrap(), false)),
+        _ => panic!(),
+    }
+}
+
 fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
     ctx.symbols
         .iter()
@@ -355,6 +363,7 @@ fn make_instruction_enum<'a>(root_table: &RootTable<'a>) -> Vec<InstructionEnumV
 
 impl<'a> RustCodeGenerator<'a> {
     pub fn new(ctx: &'a SleighContext) -> Self {
+        let context_int_type = make_context_int_type(ctx);
         let token_fields = make_token_fields(ctx);
         let non_root_sing_ctors = make_non_root_sing_ctors(ctx);
         let non_root_mult_ctors = make_non_root_multi_ctors(ctx);
@@ -364,6 +373,7 @@ impl<'a> RustCodeGenerator<'a> {
 
         Self {
             ctx,
+            context_int_type,
             token_fields,
             non_root_sing_ctors,
             non_root_mult_ctors,
@@ -835,11 +845,23 @@ impl<'a> RustCodeGenerator<'a> {
             PatternEquationInner::EllEq(ell_eq) => match &ell_eq.ell_rt.atomic {
                 Atomic::Constraint(Constraint::Compare(ConstraintCompare { op, symbol, expr })) => {
                     let op = op.gen();
-                    let token = self.token_fields.get(symbol.as_str()).expect(symbol);
                     let expr = self.gen_p_expr(expr, input, inst_next);
                     let input = gen_input_slice(input, *off);
-                    let token_disasm = token.gen_call_disasm(&input);
-                    quote! { (#token_disasm.0 #op #expr) }
+                    let lhs = self
+                        .token_fields
+                        .get(symbol.as_str())
+                        .map(|token| token.gen_call_disasm(&input))
+                        .map(|token_disasm| quote! { #token_disasm.0 })
+                        .or_else(|| match self.ctx.symbols.get(symbol)? {
+                            SymbolData::Context { field, .. } => Some(gen_compute_bit_range(
+                                &quote!(context),
+                                self.context_int_type.as_ref().unwrap(),
+                                field.low.into(),
+                                field.high.into(),
+                            )),
+                            _ => None,
+                        });
+                    quote! { (#lhs #op #expr) }
                 }
                 Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
                 Atomic::Parenthesized(p) => self.gen_check_pattern(input, inst_next, p),
@@ -973,6 +995,14 @@ impl<'a> RustCodeGenerator<'a> {
 
     fn gen_insn_enum_disasm(&self) -> TokenStream {
         let addr_int_type = self.gen_addr_int_type();
+        let params = match &self.context_int_type {
+            Some(context_int_type) => quote! {
+                input: &[u8],
+                context: #context_int_type,
+                addr: #addr_int_type
+            },
+            None => quote! { input: &[u8], addr: #addr_int_type },
+        };
         let checks = self
             .instruction_enum
             .iter()
@@ -1005,11 +1035,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl Instruction {
-                pub fn disasm(
-                    input: &[u8],
-                    context: &[u8],
-                    addr: #addr_int_type
-                ) -> Option<Self> {
+                pub fn disasm(#params) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -1137,18 +1163,32 @@ fn gen_tok_disasm(
     let endian = endian.unwrap_or(default_endian);
     let from_endian_bytes = gen_from_endian_bytes(endian);
     let token_size = Literal::u8_unsuffixed(*size);
-    let low = *low as u64;
-    let high = *high as u64;
+    let compute_bit_range =
+        gen_compute_bit_range(&quote!(tok), inner_int_type, (*low).into(), (*high).into());
     quote! {
         impl #qualified_name {
             fn disasm(bytes: &[u8]) -> Option<Self> {
                 let bytes = bytes.get(..#token_size)?;
                 let bytes: [u8; #token_size] = bytes.try_into().ok()?;
                 let tok = #inner_int_type::#from_endian_bytes(bytes);
-                let mask = (((1 << (#high + 1)) - 1) - ((1 << #low) - 1)) as #inner_int_type;
-                let out = (tok & mask) >> #low;
+                let out = #compute_bit_range;
                 Some(Self(out))
             }
+        }
+    }
+}
+
+fn gen_compute_bit_range(
+    input_int: &TokenStream,
+    int_type: &Ident,
+    low: u64,
+    high: u64,
+) -> TokenStream {
+    quote! {
+        {
+            let input_int = #input_int;
+            let mask = (((1 << (#high + 1)) - 1) - ((1 << #low) - 1)) as #int_type;
+            (input_int & mask) >> #low
         }
     }
 }
