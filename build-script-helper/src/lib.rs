@@ -14,6 +14,7 @@ pub fn build(spec_path: &str) {
     assert_eq!(rest, "");
     let ctx = sleigh_types::context::SleighContext::new(&sleigh);
     let generated = sleigh_generator::RustCodeGenerator::new(&ctx).out();
+    std::fs::write("/tmp/dump/g", format!("{generated}")).unwrap();
 
     // Format
     let generated = syn::parse_file(&generated.to_string()).unwrap();

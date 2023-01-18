@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 
 use sleigh_types::{
     ast::{
-        Atomic, Constraint, ConstraintCompare, ConstraintCompareOp, Constructor, ContextListItem,
-        DisplayToken, Endian, FieldDef, PExpression, PExpressionBin, PExpressionBinOp,
-        PExpressionUnary, PExpressionUnaryOp, PatternEquation, PatternEquationBin,
-        PatternEquationBinOp, PatternEquationInner, TokenParentInfo, INSTRUCTION,
+        Atomic, Constraint, ConstraintCompare, ConstraintCompareOp, Constructor, ContextFieldDef,
+        ContextListItem, DisplayToken, Endian, FieldDef, PExpression, PExpressionBin,
+        PExpressionBinOp, PExpressionUnary, PExpressionUnaryOp, PatternEquation,
+        PatternEquationBin, PatternEquationBinOp, PatternEquationInner, TokenParentInfo,
+        INSTRUCTION,
     },
     context::{OffAndSize, SleighContext, SymbolData, TokenField},
 };
@@ -97,6 +98,13 @@ enum LiveSymbol<'a> {
 }
 
 #[derive(Copy, Clone)]
+enum ReadableSymbol<'a> {
+    Token(&'a TokenFieldData),
+    Context(&'a ContextFieldDef),
+    InstNext,
+}
+
+#[derive(Copy, Clone)]
 enum Subtable<'a> {
     Singleton(&'a NonRootSingletonConstructor<'a>),
     Multi(&'a MultiConstructor<'a>),
@@ -131,6 +139,24 @@ impl<'a> LiveSymbol<'a> {
                 ctor.p_equation.find_offset(sym_str).unwrap()
             }
             LiveSymbol::ContextBlockItem(_) => 0,
+        }
+    }
+}
+
+impl<'a> ReadableSymbol<'a> {
+    fn gen_read(
+        self,
+        generator: &RustCodeGenerator,
+        input: &TokenStream,
+        inst_next: &TokenStream,
+    ) -> TokenStream {
+        match self {
+            ReadableSymbol::Token(field) => {
+                let value = field.gen_call_disasm(input);
+                quote! { #value.0 }
+            }
+            ReadableSymbol::Context(field) => generator.gen_read_context_field(field),
+            ReadableSymbol::InstNext => inst_next.clone(),
         }
     }
 }
@@ -182,7 +208,13 @@ fn symbol_to_type_ident(s: &str) -> Ident {
 
 fn symbol_to_mod_ident(s: &str) -> Ident {
     use heck::ToSnakeCase;
-    format_ident!("{}", s.to_snake_case())
+    let s = s.to_snake_case();
+    match syn::parse_str::<syn::Ident>(&s) {
+        Ok(_) => format_ident!("{s}"),
+        // If `syn` fails to parse the ident, it is probably a keyword,
+        // so turn it into a valid identifier by putting an underscore afterwards
+        Err(_) => format_ident!("{s}_"),
+    }
 }
 
 fn collect_to_map_vec<K: Ord, V>(iter: impl Iterator<Item = (K, V)>) -> BTreeMap<K, Vec<V>> {
@@ -386,6 +418,15 @@ impl<'a> RustCodeGenerator<'a> {
         make_int_type(self.ctx.default_space.size, false)
     }
 
+    fn gen_read_context_field(&self, field: &ContextFieldDef) -> TokenStream {
+        gen_compute_bit_range(
+            &quote!(context),
+            self.context_int_type.as_ref().unwrap(),
+            field.low.into(),
+            field.high.into(),
+        )
+    }
+
     fn lookup_subtable(&self, name: &str) -> Option<Subtable> {
         if name == INSTRUCTION {
             Some(Subtable::Root)
@@ -428,6 +469,25 @@ impl<'a> RustCodeGenerator<'a> {
                         ContextListItem::Set(_, _) => todo!(),
                     })
             })
+    }
+
+    fn lookup_readable_symbol(&'a self, symbol: &str) -> ReadableSymbol<'a> {
+        match &self.ctx.symbols[symbol] {
+            SymbolData::Value { .. } => ReadableSymbol::Token(&self.token_fields[symbol]),
+            SymbolData::Context { field, .. } => ReadableSymbol::Context(field),
+            SymbolData::End => ReadableSymbol::InstNext,
+            _ => panic!("invalid readable symbol"),
+        }
+    }
+
+    fn gen_read_readable_symbol(
+        &self,
+        symbol: &str,
+        input: &TokenStream,
+        inst_next: &TokenStream,
+    ) -> TokenStream {
+        self.lookup_readable_symbol(symbol)
+            .gen_read(self, input, inst_next)
     }
 
     fn token_to_live_symbol(
@@ -796,19 +856,7 @@ impl<'a> RustCodeGenerator<'a> {
                 let x = Literal::u64_unsuffixed(*x);
                 quote!(#x)
             }
-            Symbol(s) => match self.ctx.symbols.get(s).unwrap() {
-                SymbolData::Value { .. } => {
-                    let parsed_tok = self
-                        .token_fields
-                        .get(s.as_str())
-                        .unwrap()
-                        .gen_call_disasm(input);
-                    let int_type = self.gen_addr_int_type();
-                    quote!((#parsed_tok.0 as #int_type))
-                }
-                SymbolData::End => inst_next.to_owned(),
-                _ => panic!(),
-            },
+            Symbol(s) => self.gen_read_readable_symbol(s, input, inst_next),
             Bin(bin) => {
                 let PExpressionBin { op, l, r } = &**bin;
                 let op = op.gen();
@@ -847,20 +895,7 @@ impl<'a> RustCodeGenerator<'a> {
                     let op = op.gen();
                     let expr = self.gen_p_expr(expr, input, inst_next);
                     let input = gen_input_slice(input, *off);
-                    let lhs = self
-                        .token_fields
-                        .get(symbol.as_str())
-                        .map(|token| token.gen_call_disasm(&input))
-                        .map(|token_disasm| quote! { #token_disasm.0 })
-                        .or_else(|| match self.ctx.symbols.get(symbol)? {
-                            SymbolData::Context { field, .. } => Some(gen_compute_bit_range(
-                                &quote!(context),
-                                self.context_int_type.as_ref().unwrap(),
-                                field.low.into(),
-                                field.high.into(),
-                            )),
-                            _ => None,
-                        });
+                    let lhs = self.gen_read_readable_symbol(symbol, &input, inst_next);
                     quote! { (#lhs #op #expr) }
                 }
                 Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
