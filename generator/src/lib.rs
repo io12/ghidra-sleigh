@@ -25,7 +25,9 @@ pub struct RustCodeGenerator<'a> {
 }
 
 /// ```text
-/// struct Name(InnerIntType);
+/// mod parent {
+///     struct Name(InnerIntType);
+/// }
 /// ```
 struct TokenFieldData {
     parent: Ident,
@@ -169,7 +171,12 @@ impl<'a> ContextItemSymbol<'a> {
 
 fn symbol_to_type_ident(s: &str) -> Ident {
     use heck::ToUpperCamelCase;
-    format_ident!("{}", s.to_upper_camel_case())
+    let s = s.to_upper_camel_case();
+    if s.is_empty() {
+        format_ident!("Empty")
+    } else {
+        format_ident!("{s}")
+    }
 }
 
 fn symbol_to_mod_ident(s: &str) -> Ident {
@@ -194,9 +201,9 @@ fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
         })
         .unwrap()
         .iter()
-        .map(|constructor| match constructor.display.toks.as_slice() {
-            [DisplayToken::Symbol(mnemonic), ..] => (mnemonic, constructor),
-            _ => panic!("instruction has no mnemonic: {}", constructor.display),
+        .filter_map(|constructor| match constructor.display.toks.as_slice() {
+            [DisplayToken::Symbol(mnemonic), ..] => Some((mnemonic, constructor)),
+            _ => None,
         })
         .map(|(mnemonic, constructor)| (symbol_to_type_ident(&mnemonic), constructor));
     collect_to_map_vec(iter)
@@ -348,7 +355,6 @@ fn make_instruction_enum<'a>(root_table: &RootTable<'a>) -> Vec<InstructionEnumV
 
 impl<'a> RustCodeGenerator<'a> {
     pub fn new(ctx: &'a SleighContext) -> Self {
-        let root_table = make_root_table(ctx);
         let token_fields = make_token_fields(ctx);
         let non_root_sing_ctors = make_non_root_sing_ctors(ctx);
         let non_root_mult_ctors = make_non_root_multi_ctors(ctx);
@@ -829,7 +835,7 @@ impl<'a> RustCodeGenerator<'a> {
             PatternEquationInner::EllEq(ell_eq) => match &ell_eq.ell_rt.atomic {
                 Atomic::Constraint(Constraint::Compare(ConstraintCompare { op, symbol, expr })) => {
                     let op = op.gen();
-                    let token = self.token_fields.get(symbol.as_str()).unwrap();
+                    let token = self.token_fields.get(symbol.as_str()).expect(symbol);
                     let expr = self.gen_p_expr(expr, input, inst_next);
                     let input = gen_input_slice(input, *off);
                     let token_disasm = token.gen_call_disasm(&input);
@@ -999,7 +1005,11 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl Instruction {
-                pub fn disasm(input: &[u8], addr: #addr_int_type) -> Option<Self> {
+                pub fn disasm(
+                    input: &[u8],
+                    context: &[u8],
+                    addr: #addr_int_type
+                ) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -1037,30 +1047,33 @@ impl<'a> RustCodeGenerator<'a> {
     }
 }
 
-fn char_name(c: char) -> Option<&'static str> {
+fn char_name(c: char) -> String {
     match c {
-        '#' => Some("hash"),
-        ',' => Some("comma"),
-        '(' => Some("open paren"),
-        ')' => Some("close paren"),
-        '[' => Some("open bracket"),
-        ']' => Some("close bracket"),
-        '+' => Some("plus"),
-        _ => None,
+        '#' => "hash".into(),
+        ',' => "comma".into(),
+        '(' => "open paren".into(),
+        ')' => "close paren".into(),
+        '[' => "open bracket".into(),
+        ']' => "close bracket".into(),
+        '+' => "plus".into(),
+        '*' => "star".into(),
+        ':' => "colon".into(),
+        '.' => "dot".into(),
+        '/' => "slash".into(),
+        ' ' | '_' => " ".into(),
+        c if c.is_ascii_alphabetic() => c.into(),
+        _ => panic!("unnamed char {c}"),
     }
 }
 
 fn display_to_ident(toks: &[DisplayToken]) -> Ident {
+    dbg!(toks);
     let s = toks
         .iter()
         .map(|tok| match tok {
             DisplayToken::Caret => "caret".to_owned(),
-            DisplayToken::String(s) => s
-                .chars()
-                .map(char_name)
-                .collect::<Option<String>>()
-                .unwrap(),
-            DisplayToken::Char(c) => char_name(*c).unwrap().to_owned(),
+            DisplayToken::String(s) => s.chars().map(char_name).collect::<String>(),
+            DisplayToken::Char(c) => char_name(*c),
             DisplayToken::Space => "".to_owned(),
             DisplayToken::Symbol(s) => s.to_owned(),
         })
