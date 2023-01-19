@@ -51,7 +51,7 @@ pub struct TokenDef {
 #[derive(Debug, Clone)]
 pub struct TokenParentInfo {
     pub name: String,
-    /// Size in bits
+    /// Size in bytes
     pub size: u8,
     pub endian: Option<Endian>,
 }

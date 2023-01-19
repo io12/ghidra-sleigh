@@ -856,7 +856,11 @@ impl<'a> RustCodeGenerator<'a> {
                 let x = Literal::u64_unsuffixed(*x);
                 quote!(#x)
             }
-            Symbol(s) => self.gen_read_readable_symbol(s, input, inst_next),
+            Symbol(s) => {
+                let value = self.gen_read_readable_symbol(s, input, inst_next);
+                let int_type = self.gen_addr_int_type();
+                quote!((#value as #int_type))
+            }
             Bin(bin) => {
                 let PExpressionBin { op, l, r } = &**bin;
                 let op = op.gen();
@@ -1128,7 +1132,6 @@ fn char_name(c: char) -> String {
 }
 
 fn display_to_ident(toks: &[DisplayToken]) -> Ident {
-    dbg!(toks);
     let s = toks
         .iter()
         .map(|tok| match tok {

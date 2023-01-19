@@ -124,7 +124,7 @@ impl SleighContext {
                 SymbolData::Subtable(c) => {
                     Some(c.get(0).unwrap().p_equation.type_data.size.unwrap())
                 }
-                SymbolData::Value { field, .. } => Some((field.parent_info.size / 8).into()),
+                SymbolData::Value { field, .. } => Some(field.parent_info.size.into()),
                 SymbolData::VarNode { size, .. } => Some(*size),
                 SymbolData::Context { .. } => {
                     if let SymbolData::VarNode { size, .. } = self
