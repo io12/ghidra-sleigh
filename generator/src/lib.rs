@@ -175,9 +175,14 @@ impl<'a> Subtable<'a> {
         quote!(#name)
     }
 
-    fn gen_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
+    fn gen_try_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
         let typ = self.to_type();
-        quote! { #typ::disasm(#input, #inst_next)? }
+        quote! { #typ::disasm(#input, #inst_next) }
+    }
+
+    fn gen_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
+        let try_call = self.gen_try_call_disasm(input, inst_next);
+        quote! { #try_call? }
     }
 }
 
@@ -919,6 +924,34 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
+    fn gen_check_inner_patterns(
+        &self,
+        input: &TokenStream,
+        addr: &TokenStream,
+        ctor: &Constructor<OffAndSize>,
+    ) -> TokenStream {
+        let inner_checks = self
+            .iter_live_symbols(ctor)
+            .filter_map(|(sym_str, sym_live)| {
+                let off = sym_live.find_offset(sym_str, ctor);
+                let input = gen_input_slice(input, off);
+                match sym_live {
+                    LiveSymbol::Subtable(subtable) => {
+                        Some(subtable.gen_try_call_disasm(&input, addr))
+                    }
+                    LiveSymbol::Value(field) => Some(field.gen_try_call_disasm(&input)),
+                    LiveSymbol::ContextBlockItem(_) => None,
+                }
+            })
+            .map(|try_call| quote! { #try_call.is_some() })
+            .collect::<Vec<TokenStream>>();
+        if inner_checks.is_empty() {
+            quote! { true }
+        } else {
+            quote! { #(#inner_checks)&&* }
+        }
+    }
+
     fn gen_disasm_ctor(
         &self,
         name: &TokenStream,
@@ -995,10 +1028,12 @@ impl<'a> RustCodeGenerator<'a> {
                     };
                     let check_pattern =
                         self.gen_check_pattern(&input, &inst_next, &ctor.p_equation);
+                    let check_inner_patterns =
+                        self.gen_check_inner_patterns(&input, &inst_next, ctor);
                     let disasm_ctor =
                         self.gen_disasm_ctor(qualified_name, &input, &inst_next, ctor);
                     quote! {
-                        if #check_pattern {
+                        if #check_pattern && #check_inner_patterns {
                             Some(#disasm_ctor)
                         } else
                     }
@@ -1323,8 +1358,13 @@ impl FindOffset for PatternEquation<OffAndSize> {
 }
 
 impl TokenFieldData {
-    fn gen_call_disasm(&self, input: &TokenStream) -> TokenStream {
+    fn gen_try_call_disasm(&self, input: &TokenStream) -> TokenStream {
         let Self { qualified_name, .. } = self;
-        quote! { #qualified_name::disasm(#input)? }
+        quote! { #qualified_name::disasm(#input) }
+    }
+
+    fn gen_call_disasm(&self, input: &TokenStream) -> TokenStream {
+        let try_call = self.gen_try_call_disasm(input);
+        quote! { #try_call? }
     }
 }
