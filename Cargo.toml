@@ -5,5 +5,5 @@ members = [
     "generator",
     "build-script-helper",
     "arch/6502",
-    # "arch/x86",
+    "arch/x86",
 ]

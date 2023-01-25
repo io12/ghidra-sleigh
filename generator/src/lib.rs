@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{hash_map, BTreeMap, HashMap, HashSet};
 
 use sleigh_types::{
     ast::{
@@ -18,12 +18,12 @@ type RootTable<'a> = BTreeMap<Ident, Vec<&'a Constructor<OffAndSize>>>;
 
 pub struct RustCodeGenerator<'a> {
     ctx: &'a SleighContext,
-    context_int_type: Option<Ident>,
+    context_int_type: TokenStream,
     token_fields: BTreeMap<&'a str, TokenFieldData>,
     non_root_sing_ctors: BTreeMap<&'a str, NonRootSingletonConstructor<'a>>,
-    non_root_mult_ctors: BTreeMap<&'a str, MultiConstructor<'a>>,
-    instruction_enum: Vec<InstructionEnumVariant<'a>>,
-    mnemonic_enums: Vec<MultiConstructor<'a>>,
+    non_root_mult_ctors: BTreeMap<&'a str, MultiConstructor>,
+    instruction_enum: Vec<InstructionEnumVariant>,
+    mnemonic_enums: Vec<MultiConstructor>,
 }
 
 /// ```text
@@ -37,6 +37,7 @@ struct TokenFieldData {
     qualified_name: TokenStream,
     field: TokenField,
     inner_int_type: Ident,
+    inner_int_type_unsigned: Ident,
 }
 
 /// ```text
@@ -64,24 +65,26 @@ struct NonRootSingletonConstructor<'a> {
 ///     C1C2C3(C1, C2, C3),
 /// }
 /// ```
-struct MultiConstructor<'a> {
+struct MultiConstructor {
     name: Ident,
-    variants: Vec<CtorEnumVariant<'a>>,
+    variants: Vec<CtorEnumVariant>,
 }
 
-struct CtorEnumVariant<'a> {
-    ctor: &'a Constructor<OffAndSize>,
+#[derive(Clone)]
+struct CtorEnumVariant {
+    ctor: Constructor<OffAndSize>,
     inner: EnumVariant,
 }
 
+#[derive(Clone)]
 struct EnumVariant {
     name: Ident,
     qualified_name: TokenStream,
 }
 
-enum InstructionEnumVariant<'a> {
+enum InstructionEnumVariant {
     Duplicate(EnumVariant),
-    Unique(CtorEnumVariant<'a>),
+    Unique(CtorEnumVariant),
 }
 
 #[derive(Copy, Clone)]
@@ -107,7 +110,7 @@ enum ReadableSymbol<'a> {
 #[derive(Copy, Clone)]
 enum Subtable<'a> {
     Singleton(&'a NonRootSingletonConstructor<'a>),
-    Multi(&'a MultiConstructor<'a>),
+    Multi(&'a MultiConstructor),
     Root,
 }
 
@@ -177,7 +180,7 @@ impl<'a> Subtable<'a> {
 
     fn gen_try_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
         let typ = self.to_type();
-        quote! { #typ::disasm(#input, #inst_next) }
+        quote! { #typ::disasm(#input, #inst_next, context) }
     }
 
     fn gen_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
@@ -253,10 +256,16 @@ fn make_int_type(bytes: u8, signed: bool) -> Ident {
     format_ident!("{sign}{bits}")
 }
 
-fn make_context_int_type(ctx: &SleighContext) -> Option<Ident> {
-    match ctx.symbols.get(ctx.context_var_node.as_ref()?).unwrap() {
-        SymbolData::VarNode { size, .. } => Some(make_int_type((*size).try_into().unwrap(), false)),
-        _ => panic!(),
+fn make_context_int_type(ctx: &SleighContext) -> TokenStream {
+    match &ctx.context_var_node {
+        Some(context_var_node) => match ctx.symbols.get(context_var_node).unwrap() {
+            SymbolData::VarNode { size, .. } => {
+                let int_type = make_int_type((*size).try_into().unwrap(), false);
+                quote! { #int_type }
+            }
+            _ => panic!(),
+        },
+        None => quote! { () },
     }
 }
 
@@ -268,12 +277,14 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
                 let name = symbol_to_type_ident(&symbol);
                 let parent = symbol_to_mod_ident(&field.parent_info.name);
                 let qualified_name = quote!(#parent::#name);
+                let parent_size = field.parent_info.size;
                 let data = TokenFieldData {
                     name,
                     parent,
                     qualified_name,
                     field: field.clone(),
-                    inner_int_type: make_int_type(field.parent_info.size, field.field_info.signed),
+                    inner_int_type: make_int_type(parent_size, field.field_info.signed),
+                    inner_int_type_unsigned: make_int_type(parent_size, false),
                 };
                 Some((symbol.as_str(), data))
             }
@@ -313,6 +324,47 @@ fn make_non_root_sing_ctors(ctx: &SleighContext) -> BTreeMap<&str, NonRootSingle
         .collect()
 }
 
+fn merge_variants(variants: Vec<CtorEnumVariant>) -> HashMap<Ident, CtorEnumVariant> {
+    let mut ret = HashMap::<Ident, CtorEnumVariant>::new();
+    for variant in variants {
+        let name = variant.inner.name.clone();
+        match ret.entry(name) {
+            hash_map::Entry::Occupied(mut entry) => {
+                let p = &mut entry.get_mut().ctor.p_equation;
+                *p = PatternEquation {
+                    inner: PatternEquationInner::Bin(Box::new(PatternEquationBin {
+                        op: PatternEquationBinOp::Or,
+                        l: p.clone(),
+                        r: variant.ctor.p_equation,
+                    })),
+                    type_data: p.type_data,
+                };
+            }
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(variant);
+            }
+        }
+    }
+    ret
+}
+
+fn dedup_variants(variants: Vec<CtorEnumVariant>) -> Vec<CtorEnumVariant> {
+    let len = variants.len();
+    let merged_variants = merge_variants(variants.clone());
+    let mut visited_variants = HashSet::with_capacity(len);
+    let mut ret = Vec::with_capacity(len);
+    for variant in variants.into_iter().rev() {
+        let name = variant.inner.name;
+        if !visited_variants.contains(&name) {
+            let variant = merged_variants[&name].clone();
+            ret.push(variant);
+            visited_variants.insert(name);
+        }
+    }
+    ret.reverse();
+    ret
+}
+
 fn make_non_root_multi_ctors(ctx: &SleighContext) -> BTreeMap<&str, MultiConstructor> {
     non_root_iter(ctx)
         .filter_map(|(name_str, cs)| match cs.as_slice() {
@@ -327,14 +379,15 @@ fn make_non_root_multi_ctors(ctx: &SleighContext) -> BTreeMap<&str, MultiConstru
                         let variant_name = display_to_ident(toks);
                         let qualified_name = quote!(#name_ident::#variant_name);
                         CtorEnumVariant {
-                            ctor,
+                            ctor: ctor.clone(),
                             inner: EnumVariant {
                                 name: variant_name,
                                 qualified_name,
                             },
                         }
                     })
-                    .collect();
+                    .collect::<Vec<CtorEnumVariant>>();
+                let variants = dedup_variants(variants);
                 Some((
                     name_str,
                     MultiConstructor {
@@ -347,7 +400,7 @@ fn make_non_root_multi_ctors(ctx: &SleighContext) -> BTreeMap<&str, MultiConstru
         .collect()
 }
 
-fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor<'a>> {
+fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor> {
     root_table
         .iter()
         .filter(|(_, ctors)| ctors.len() > 1)
@@ -359,7 +412,7 @@ fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor<'
                     let name = display_to_ident(toks.get(1..).unwrap());
                     let qualified_name = quote!(#mnemonic::#name);
                     CtorEnumVariant {
-                        ctor,
+                        ctor: (*ctor).clone(),
                         inner: EnumVariant {
                             name,
                             qualified_name,
@@ -367,6 +420,7 @@ fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor<'
                     }
                 })
                 .collect();
+            let variants = dedup_variants(variants);
             MultiConstructor {
                 name: mnemonic.clone(),
                 variants,
@@ -375,7 +429,7 @@ fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor<'
         .collect()
 }
 
-fn make_instruction_enum<'a>(root_table: &RootTable<'a>) -> Vec<InstructionEnumVariant<'a>> {
+fn make_instruction_enum<'a>(root_table: &RootTable<'a>) -> Vec<InstructionEnumVariant> {
     root_table
         .iter()
         .map(|(mnemonic, constructors)| {
@@ -383,7 +437,7 @@ fn make_instruction_enum<'a>(root_table: &RootTable<'a>) -> Vec<InstructionEnumV
             match constructors.as_slice() {
                 [] => unimplemented!(),
                 [ctor] => InstructionEnumVariant::Unique(CtorEnumVariant {
-                    ctor,
+                    ctor: (*ctor).clone(),
                     inner: EnumVariant {
                         name: mnemonic.clone(),
                         qualified_name,
@@ -424,9 +478,12 @@ impl<'a> RustCodeGenerator<'a> {
     }
 
     fn gen_read_context_field(&self, field: &ContextFieldDef) -> TokenStream {
+        let int_type = &self.context_int_type;
+        let int_type = &quote!(#int_type);
         gen_compute_bit_range(
             &quote!(context),
-            self.context_int_type.as_ref().unwrap(),
+            int_type,
+            int_type,
             field.low.into(),
             field.high.into(),
         )
@@ -538,7 +595,7 @@ impl<'a> RustCodeGenerator<'a> {
         quote! { #name #tuple_type , }
     }
 
-    fn gen_multi_ctors(&self, iter: impl Iterator<Item = &'a MultiConstructor<'a>>) -> TokenStream {
+    fn gen_multi_ctors(&self, iter: impl Iterator<Item = &'a MultiConstructor>) -> TokenStream {
         iter.map(|MultiConstructor { name, variants }| {
             let derives = gen_derives();
             let variants = variants
@@ -719,7 +776,7 @@ impl<'a> RustCodeGenerator<'a> {
 
     fn gen_multi_ctor_display_impl(
         &self,
-        iter: impl Iterator<Item = &'a MultiConstructor<'a>>,
+        iter: impl Iterator<Item = &'a MultiConstructor>,
     ) -> TokenStream {
         iter.map(|MultiConstructor { name, variants }| {
             let arms = variants
@@ -868,10 +925,16 @@ impl<'a> RustCodeGenerator<'a> {
             }
             Bin(bin) => {
                 let PExpressionBin { op, l, r } = &**bin;
-                let op = op.gen();
+                let op_code = op.gen();
                 let l = self.gen_p_expr(l, input, inst_next);
                 let r = self.gen_p_expr(r, input, inst_next);
-                quote!(#l.#op(#r))
+                let l = quote! { std::num::Wrapping(#l) };
+                use PExpressionBinOp::*;
+                let r = match op {
+                    LeftShift | RightShift => quote! { (#r as usize) },
+                    _ => quote! { std::num::Wrapping(#r) },
+                };
+                quote! { (#l #op_code #r).0 }
             }
             Unary(unary) => {
                 let PExpressionUnary { op, operand } = &**unary;
@@ -980,9 +1043,14 @@ impl<'a> RustCodeGenerator<'a> {
         let check_pattern = self.gen_check_pattern(&input, &inst_next, &ctor.p_equation);
         let disasm_ctor = self.gen_disasm_ctor(&quote!(#name), &input, &inst_next, ctor);
         let addr_int_type = self.gen_addr_int_type();
+        let context_int_type = &self.context_int_type;
         quote! {
             impl #name {
-                fn disasm(input: &[u8], inst_next: #addr_int_type) -> Option<Self> {
+                fn disasm(
+                    input: &[u8],
+                    inst_next: #addr_int_type,
+                    context: #context_int_type,
+                ) -> Option<Self> {
                     if #check_pattern {
                         Some(#disasm_ctor)
                     } else {
@@ -1005,12 +1073,13 @@ impl<'a> RustCodeGenerator<'a> {
         MultiConstructor { name, variants }: &MultiConstructor,
         is_mnemonic_enum: bool,
     ) -> TokenStream {
-        let param_name = if is_mnemonic_enum {
+        let addr_param_name = if is_mnemonic_enum {
             quote!(addr)
         } else {
             quote!(inst_next)
         };
         let addr_int_type = self.gen_addr_int_type();
+        let context_int_type = &self.context_int_type;
         let checks = variants
             .iter()
             .map(
@@ -1042,7 +1111,11 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl #name {
-                fn disasm(input: &[u8], #param_name: #addr_int_type) -> Option<Self> {
+                fn disasm(
+                    input: &[u8],
+                    #addr_param_name: #addr_int_type,
+                    context: #context_int_type,
+                ) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -1069,14 +1142,7 @@ impl<'a> RustCodeGenerator<'a> {
 
     fn gen_insn_enum_disasm(&self) -> TokenStream {
         let addr_int_type = self.gen_addr_int_type();
-        let params = match &self.context_int_type {
-            Some(context_int_type) => quote! {
-                input: &[u8],
-                context: #context_int_type,
-                addr: #addr_int_type
-            },
-            None => quote! { input: &[u8], addr: #addr_int_type },
-        };
+        let context_int_type = &self.context_int_type;
         let checks = self
             .instruction_enum
             .iter()
@@ -1086,7 +1152,7 @@ impl<'a> RustCodeGenerator<'a> {
                         name,
                         qualified_name,
                     }) => {
-                        let disasm = quote!(#name::disasm(input, addr));
+                        let disasm = quote!(#name::disasm(input, addr, context));
                         (quote!(#disasm.is_some()), quote!(#qualified_name(#disasm?)))
                     }
                     InstructionEnumVariant::Unique(CtorEnumVariant { ctor, inner }) => {
@@ -1109,7 +1175,11 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl Instruction {
-                pub fn disasm(#params) -> Option<Self> {
+                pub fn disasm(
+                    input: &[u8],
+                    addr: #addr_int_type,
+                    context: #context_int_type,
+                ) -> Option<Self> {
                     if false {
                         unreachable!()
                     } else #checks {
@@ -1230,14 +1300,20 @@ fn gen_tok_disasm(
                 parent_info: TokenParentInfo { size, endian, .. },
             },
         inner_int_type,
+        inner_int_type_unsigned,
         ..
     }: &TokenFieldData,
 ) -> TokenStream {
     let endian = endian.unwrap_or(default_endian);
     let from_endian_bytes = gen_from_endian_bytes(endian);
     let token_size = Literal::u8_unsuffixed(*size);
-    let compute_bit_range =
-        gen_compute_bit_range(&quote!(tok), inner_int_type, (*low).into(), (*high).into());
+    let compute_bit_range = gen_compute_bit_range(
+        &quote!(tok),
+        &quote!(#inner_int_type),
+        &quote!(#inner_int_type_unsigned),
+        (*low).into(),
+        (*high).into(),
+    );
     quote! {
         impl #qualified_name {
             fn disasm(bytes: &[u8]) -> Option<Self> {
@@ -1251,19 +1327,35 @@ fn gen_tok_disasm(
     }
 }
 
+fn compute_mask(low: u64, high: u64) -> u64 {
+    let bits = u64::BITS.into();
+    assert!(low <= high && low < bits && high < bits);
+    let high_mask = if high == bits - 1 {
+        u64::MAX
+    } else {
+        1_u64
+            .checked_shl(high.checked_add(1).unwrap().try_into().unwrap())
+            .unwrap()
+            .checked_sub(1)
+            .unwrap()
+    };
+    let low_mask = 1_u64
+        .checked_shl(low.try_into().unwrap())
+        .unwrap()
+        .checked_sub(1)
+        .unwrap();
+    high_mask.checked_sub(low_mask).unwrap()
+}
+
 fn gen_compute_bit_range(
     input_int: &TokenStream,
-    int_type: &Ident,
+    int_type: &TokenStream,
+    int_type_unsigned: &TokenStream,
     low: u64,
     high: u64,
 ) -> TokenStream {
-    quote! {
-        {
-            let input_int = #input_int;
-            let mask = (((1 << (#high + 1)) - 1) - ((1 << #low) - 1)) as #int_type;
-            (input_int & mask) >> #low
-        }
-    }
+    let mask = Literal::u64_unsuffixed(compute_mask(low, high));
+    quote! { ((((#input_int as #int_type_unsigned) & #mask) >> #low) as #int_type) }
 }
 
 fn gen_input_slice(input: &TokenStream, off: u64) -> TokenStream {
@@ -1305,15 +1397,15 @@ impl Generate for PExpressionBinOp {
     fn gen(self) -> TokenStream {
         use PExpressionBinOp::*;
         match self {
-            Add => quote!(wrapping_add),
-            Sub => quote!(wrapping_sub),
-            Mult => quote!(mul),
-            LeftShift => quote!(shl),
-            RightShift => quote!(shr),
-            And => quote!(bitand),
-            Or => quote!(bitor),
-            Xor => quote!(bitxor),
-            Div => quote!(div),
+            Add => quote!(+),
+            Sub => quote!(-),
+            Mult => quote!(*),
+            LeftShift => quote!(<<),
+            RightShift => quote!(>>),
+            And => quote!(&),
+            Or => quote!(|),
+            Xor => quote!(^),
+            Div => quote!(/),
         }
     }
 }
