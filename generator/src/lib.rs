@@ -8,7 +8,7 @@ use sleigh_types::{
         PatternEquationBin, PatternEquationBinOp, PatternEquationInner, TokenParentInfo,
         INSTRUCTION,
     },
-    context::{OffAndSize, SleighContext, SymbolData, TokenField},
+    context::{Attach, OffAndSize, SleighContext, SymbolData, TokenField},
 };
 
 use proc_macro2::{Ident, Literal, TokenStream};
@@ -36,6 +36,7 @@ struct TokenFieldData {
     name: Ident,
     qualified_name: TokenStream,
     field: TokenField,
+    attached: Option<Attach>,
     inner_int_type: Ident,
     inner_int_type_unsigned: Ident,
 }
@@ -156,10 +157,16 @@ impl<'a> ReadableSymbol<'a> {
         match self {
             ReadableSymbol::Token(field) => {
                 let value = field.gen_call_disasm(input);
-                quote! { #value.0 }
+                quote! { #value.map(|value| value.0) }
             }
-            ReadableSymbol::Context(field) => generator.gen_read_context_field(field),
-            ReadableSymbol::InstNext => inst_next.clone(),
+            ReadableSymbol::Context(field) => {
+                let value = generator.gen_read_context_field(field);
+                quote! { Some(#value) }
+            }
+            ReadableSymbol::InstNext => {
+                let value = inst_next.clone();
+                quote! { Some(#value) }
+            }
         }
     }
 }
@@ -178,14 +185,11 @@ impl<'a> Subtable<'a> {
         quote!(#name)
     }
 
-    fn gen_try_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
-        let typ = self.to_type();
-        quote! { #typ::disasm(#input, #inst_next, context) }
-    }
-
     fn gen_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
-        let try_call = self.gen_try_call_disasm(input, inst_next);
-        quote! { #try_call? }
+        let typ = self.to_type();
+        quote! {
+            #input.and_then(|input| #typ::disasm(input, #inst_next, context))
+        }
     }
 }
 
@@ -273,7 +277,7 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
     ctx.symbols
         .iter()
         .filter_map(|(symbol, data)| match data {
-            SymbolData::Value { field, .. } => {
+            SymbolData::Value { field, attached } => {
                 let name = symbol_to_type_ident(&symbol);
                 let parent = symbol_to_mod_ident(&field.parent_info.name);
                 let qualified_name = quote!(#parent::#name);
@@ -283,6 +287,7 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
                     parent,
                     qualified_name,
                     field: field.clone(),
+                    attached: attached.clone(),
                     inner_int_type: make_int_type(parent_size, field.field_info.signed),
                     inner_int_type_unsigned: make_int_type(parent_size, false),
                 };
@@ -719,10 +724,7 @@ impl<'a> RustCodeGenerator<'a> {
     fn gen_token_types_display_impl(&self) -> TokenStream {
         self.token_fields
             .values()
-            .map(|data| {
-                let write = gen_int_write(data.field.parent_info.size, quote!(self.0));
-                gen_display_impl(&data.qualified_name, write)
-            })
+            .map(gen_token_type_display_impl)
             .collect()
     }
 
@@ -916,31 +918,31 @@ impl<'a> RustCodeGenerator<'a> {
         match expr {
             ConstantValue(x) => {
                 let x = Literal::u64_unsuffixed(*x);
-                quote!(#x)
+                quote!(Some(#x))
             }
             Symbol(s) => {
                 let value = self.gen_read_readable_symbol(s, input, inst_next);
                 let int_type = self.gen_addr_int_type();
-                quote!((#value as #int_type))
+                quote!(#value.map(|value| value as #int_type))
             }
             Bin(bin) => {
                 let PExpressionBin { op, l, r } = &**bin;
                 let op_code = op.gen();
                 let l = self.gen_p_expr(l, input, inst_next);
                 let r = self.gen_p_expr(r, input, inst_next);
-                let l = quote! { std::num::Wrapping(#l) };
+                let l = quote! { #l.map(std::num::Wrapping) };
                 use PExpressionBinOp::*;
                 let r = match op {
-                    LeftShift | RightShift => quote! { (#r as usize) },
-                    _ => quote! { std::num::Wrapping(#r) },
+                    LeftShift | RightShift => quote! { #r.map(|r| r as usize) },
+                    _ => quote! { #r.map(std::num::Wrapping) },
                 };
-                quote! { (#l #op_code #r).0 }
+                quote! { #l.zip(#r).map(|(l, r)| (l #op_code r).0) }
             }
             Unary(unary) => {
                 let PExpressionUnary { op, operand } = &**unary;
                 let op = op.gen();
                 let operand = self.gen_p_expr(operand, input, inst_next);
-                quote!((#op #operand))
+                quote!(#operand.map(|operand| #op operand))
             }
         }
     }
@@ -968,7 +970,7 @@ impl<'a> RustCodeGenerator<'a> {
                     let expr = self.gen_p_expr(expr, input, inst_next);
                     let input = gen_input_slice(input, *off);
                     let lhs = self.gen_read_readable_symbol(symbol, &input, inst_next);
-                    quote! { (#lhs #op #expr) }
+                    quote! { (#lhs.zip(#expr).map(|(l, r)| l #op r) == Some(true)) }
                 }
                 Atomic::Constraint(Constraint::Symbol(_)) => quote!(true),
                 Atomic::Parenthesized(p) => self.gen_check_pattern(input, inst_next, p),
@@ -999,10 +1001,8 @@ impl<'a> RustCodeGenerator<'a> {
                 let off = sym_live.find_offset(sym_str, ctor);
                 let input = gen_input_slice(input, off);
                 match sym_live {
-                    LiveSymbol::Subtable(subtable) => {
-                        Some(subtable.gen_try_call_disasm(&input, addr))
-                    }
-                    LiveSymbol::Value(field) => Some(field.gen_try_call_disasm(&input)),
+                    LiveSymbol::Subtable(subtable) => Some(subtable.gen_call_disasm(&input, addr)),
+                    LiveSymbol::Value(field) => Some(field.gen_call_disasm(&input)),
                     LiveSymbol::ContextBlockItem(_) => None,
                 }
             })
@@ -1027,7 +1027,8 @@ impl<'a> RustCodeGenerator<'a> {
             .map(|(sym_str, sym_live)| {
                 let off = sym_live.find_offset(sym_str, ctor);
                 let input = gen_input_slice(input, off);
-                sym_live.gen_call_disasm(self, &input, addr)
+                let call_disasm = sym_live.gen_call_disasm(self, &input, addr);
+                quote! { #call_disasm? }
             })
             .collect::<Vec<TokenStream>>();
         let construct_args = gen_tuple(&quote!(), &construct_args);
@@ -1360,7 +1361,7 @@ fn gen_compute_bit_range(
 
 fn gen_input_slice(input: &TokenStream, off: u64) -> TokenStream {
     let off = Literal::u64_unsuffixed(off);
-    quote!(#input.get(#off..)?)
+    quote!(#input.get(#off..))
 }
 
 fn gen_int_write(size_in_bytes: u8, expr: TokenStream) -> TokenStream {
@@ -1373,6 +1374,35 @@ fn gen_derives() -> TokenStream {
     quote! {
         #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     }
+}
+
+fn gen_write_attached<T: ToString>(attached: &[T]) -> TokenStream {
+    let arms = attached
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let i = Literal::usize_unsuffixed(i);
+            let s = s.to_string();
+            quote! { #i => f.write_str(#s), }
+        })
+        .collect::<TokenStream>();
+    quote! {
+        match self.0 {
+            #arms
+            _ => Err(std::fmt::Error),
+        }
+    }
+}
+
+fn gen_token_type_display_impl(data: &TokenFieldData) -> TokenStream {
+    let write = match &data.attached {
+        Some(Attach::Variables(attached) | Attach::Names(attached)) => {
+            gen_write_attached(&attached)
+        }
+        Some(Attach::Values(attached)) => gen_write_attached(&attached),
+        None => gen_int_write(data.field.parent_info.size, quote!(self.0)),
+    };
+    gen_display_impl(&data.qualified_name, write)
 }
 
 trait Generate {
@@ -1450,13 +1480,8 @@ impl FindOffset for PatternEquation<OffAndSize> {
 }
 
 impl TokenFieldData {
-    fn gen_try_call_disasm(&self, input: &TokenStream) -> TokenStream {
-        let Self { qualified_name, .. } = self;
-        quote! { #qualified_name::disasm(#input) }
-    }
-
     fn gen_call_disasm(&self, input: &TokenStream) -> TokenStream {
-        let try_call = self.gen_try_call_disasm(input);
-        quote! { #try_call? }
+        let Self { qualified_name, .. } = self;
+        quote! { #input.and_then(|input| #qualified_name::disasm(input)) }
     }
 }
