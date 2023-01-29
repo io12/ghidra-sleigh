@@ -351,7 +351,10 @@ impl SleighContext {
                             })),
                             type_data: OffAndSize {
                                 off,
-                                size: self.lookup_symbol_size(symbol),
+                                size: match self.symbols.get(symbol) {
+                                    Some(SymbolData::Context { .. }) => Some(0),
+                                    _ => self.lookup_symbol_size(symbol),
+                                },
                             },
                         },
                     },
