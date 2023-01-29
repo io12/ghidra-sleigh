@@ -8,9 +8,11 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             .build()
             .disassemble(data, addr.into());
         if len <= data.len() {
-            insns
-                .get(0)
-                .map(|insn| format!("{} {}", insn.mnemonic, insn.body))
+            insns.get(0).map(|insn| {
+                format!("{} {}", insn.mnemonic, insn.body)
+                    .trim()
+                    .to_string()
+            })
         } else {
             None
         }
