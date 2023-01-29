@@ -851,10 +851,10 @@ impl<'a> RustCodeGenerator<'a> {
                     let var = format_ident!("_{i}");
                     quote! { write!(f, "{}", #var)?; }
                 }
-                (Some((i, LiveSymbol::ContextBlockItem(ctx_block))), DisplayToken::Symbol(_)) => {
+                (Some((i, LiveSymbol::ContextBlockItem(_))), DisplayToken::Symbol(_)) => {
                     let var = format_ident!("_{i}");
                     let var = quote!(#var);
-                    let write = gen_int_write(ctx_block.size, var);
+                    let write = gen_int_write(var);
                     quote! { #write?; }
                 }
                 (Some(_), _) => unreachable!(),
@@ -1364,10 +1364,8 @@ fn gen_input_slice(input: &TokenStream, off: u64) -> TokenStream {
     quote!(#input.get(#off..))
 }
 
-fn gen_int_write(size_in_bytes: u8, expr: TokenStream) -> TokenStream {
-    let num_digits = size_in_bytes * 2;
-    let fmt = format!("{{:0{num_digits}X}}");
-    quote!(write!(f, #fmt, #expr))
+fn gen_int_write(expr: TokenStream) -> TokenStream {
+    quote!(write!(f, "{:#x?}", #expr))
 }
 
 fn gen_derives() -> TokenStream {
@@ -1376,13 +1374,13 @@ fn gen_derives() -> TokenStream {
     }
 }
 
-fn gen_write_attached<T: ToString>(attached: &[T]) -> TokenStream {
+fn gen_write_attached(attached: impl IntoIterator<Item = impl AsRef<str>>) -> TokenStream {
     let arms = attached
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(i, s)| {
             let i = Literal::usize_unsuffixed(i);
-            let s = s.to_string();
+            let s = s.as_ref();
             quote! { #i => f.write_str(#s), }
         })
         .collect::<TokenStream>();
@@ -1399,8 +1397,10 @@ fn gen_token_type_display_impl(data: &TokenFieldData) -> TokenStream {
         Some(Attach::Variables(attached) | Attach::Names(attached)) => {
             gen_write_attached(&attached)
         }
-        Some(Attach::Values(attached)) => gen_write_attached(&attached),
-        None => gen_int_write(data.field.parent_info.size, quote!(self.0)),
+        Some(Attach::Values(attached)) => {
+            gen_write_attached(attached.iter().map(|value| format!("{value:#x?}")))
+        }
+        None => gen_int_write(quote!(self.0)),
     };
     gen_display_impl(&data.qualified_name, write)
 }
