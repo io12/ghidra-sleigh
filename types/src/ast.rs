@@ -175,7 +175,7 @@ pub struct Constructor<T> {
     pub rtl_body: RtlBody,
 }
 
-#[derive(Debug, Clone, derive_more::Display)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
 pub enum PatternEquationBinOp {
     #[display(fmt = "&")]
     And,

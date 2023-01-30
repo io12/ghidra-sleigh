@@ -24,6 +24,7 @@ pub struct RustCodeGenerator<'a> {
     non_root_mult_ctors: BTreeMap<&'a str, MultiConstructor>,
     instruction_enum: Vec<InstructionEnumVariant>,
     mnemonic_enums: Vec<MultiConstructor>,
+    root_rec_ctors: Vec<&'a Constructor<OffAndSize>>,
 }
 
 /// ```text
@@ -254,6 +255,25 @@ fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
     collect_to_map_vec(iter)
 }
 
+fn make_root_rec_ctors(ctx: &SleighContext) -> Vec<&Constructor<OffAndSize>> {
+    ctx.symbols
+        .iter()
+        .find_map(|(symbol, data)| match (symbol.as_str(), data) {
+            (INSTRUCTION, SymbolData::Subtable(cs)) => Some(cs),
+            _ => None,
+        })
+        .unwrap()
+        .iter()
+        .filter(|ctor| {
+            matches!(
+                ctor.display.toks.as_slice(),
+                [DisplayToken::Caret, DisplayToken::Symbol(sym)]
+                    if sym == INSTRUCTION,
+            )
+        })
+        .collect()
+}
+
 fn make_int_type(bytes: u8, signed: bool) -> Ident {
     let sign = if signed { "i" } else { "u" };
     let bits = bytes * 8;
@@ -466,6 +486,7 @@ impl<'a> RustCodeGenerator<'a> {
         let root_table = make_root_table(ctx);
         let mnemonic_enums = make_mnemonic_enums(&root_table);
         let instruction_enum = make_instruction_enum(&root_table);
+        let root_rec_ctors = make_root_rec_ctors(ctx);
 
         Self {
             ctx,
@@ -475,6 +496,7 @@ impl<'a> RustCodeGenerator<'a> {
             non_root_mult_ctors,
             mnemonic_enums,
             instruction_enum,
+            root_rec_ctors,
         }
     }
 
@@ -1141,7 +1163,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect()
     }
 
-    fn gen_insn_enum_disasm(&self) -> TokenStream {
+    fn gen_insn_enum_disasm_inner(&self) -> TokenStream {
         let addr_int_type = self.gen_addr_int_type();
         let context_int_type = &self.context_int_type;
         let checks = self
@@ -1176,7 +1198,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl Instruction {
-                pub fn disasm(
+                fn disasm_inner(
                     input: &[u8],
                     addr: #addr_int_type,
                     context: #context_int_type,
@@ -1191,17 +1213,56 @@ impl<'a> RustCodeGenerator<'a> {
         }
     }
 
+    fn gen_insn_enum_disasm(&self) -> TokenStream {
+        let addr_int_type = self.gen_addr_int_type();
+        let context_int_type = &self.context_int_type;
+        let checks = self
+            .root_rec_ctors
+            .iter()
+            .map(|ctor| {
+                let pattern = unwrap_root_rec_pattern(ctor);
+                let input = &quote!(input);
+                let check_pattern = self.gen_check_pattern(input, &quote!(TODO_UNUSED), pattern);
+                assert_eq!(pattern.type_data.off, 0);
+                let prefix_size = pattern.type_data.size.unwrap();
+                let after_prefix_slice = gen_input_slice(input, prefix_size);
+                quote! {
+                    if #check_pattern {
+                        Instruction::disasm(#after_prefix_slice, addr, context)
+                    } else
+                }
+            })
+            .collect::<TokenStream>();
+        quote! {
+            impl Instruction {
+                pub fn disasm(
+                    input: &[u8],
+                    addr: #addr_int_type,
+                    context: #context_int_type,
+                ) -> Option<Self> {
+                    if false {
+                        unreachable!()
+                    } else #checks {
+                        Instruction::disasm_inner(input, addr, context)
+                    }
+                }
+            }
+        }
+    }
+
     fn gen_disasm(&self) -> TokenStream {
         let tok_reads = self.gen_tok_disasms();
         let non_root_sing_ctor_disasms = self.gen_non_root_sing_ctor_disasms();
         let non_root_mult_ctor_disasms = self.gen_non_root_mult_ctor_disasms();
         let mnemonic_enum_disasms = self.gen_mnemonic_enum_disasms();
+        let insn_enum_disasm_inner = self.gen_insn_enum_disasm_inner();
         let insn_enum_disasm = self.gen_insn_enum_disasm();
         quote! {
             #tok_reads
             #non_root_sing_ctor_disasms
             #non_root_mult_ctor_disasms
             #mnemonic_enum_disasms
+            #insn_enum_disasm_inner
             #insn_enum_disasm
         }
     }
@@ -1394,15 +1455,34 @@ fn gen_write_attached(attached: impl IntoIterator<Item = impl AsRef<str>>) -> To
 
 fn gen_token_type_display_impl(data: &TokenFieldData) -> TokenStream {
     let write = match &data.attached {
-        Some(Attach::Variables(attached) | Attach::Names(attached)) => {
-            gen_write_attached(&attached)
-        }
+        Some(Attach::Variables(attached) | Attach::Names(attached)) => gen_write_attached(attached),
         Some(Attach::Values(attached)) => {
             gen_write_attached(attached.iter().map(|value| format!("{value:#x?}")))
         }
         None => gen_int_write(quote!(self.0)),
     };
     gen_display_impl(&data.qualified_name, write)
+}
+
+fn unwrap_root_rec_pattern(ctor: &Constructor<OffAndSize>) -> &PatternEquation<OffAndSize> {
+    let bin = if let PatternEquationInner::Bin(bin) = &ctor.p_equation.inner {
+        &**bin
+    } else {
+        panic!()
+    };
+    let r = if let PatternEquationInner::EllEq(ell_eq) = &bin.r.inner {
+        &**ell_eq
+    } else {
+        panic!()
+    };
+    let r = if let Atomic::Constraint(Constraint::Symbol(sym)) = &r.ell_rt.atomic {
+        sym
+    } else {
+        panic!()
+    };
+    assert_eq!(r, INSTRUCTION);
+    assert_eq!(bin.op, PatternEquationBinOp::Cat);
+    &bin.l
 }
 
 trait Generate {
