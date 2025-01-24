@@ -1,4 +1,3 @@
-use lazy_static::lazy_static;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_till, take_until, take_while},
@@ -17,6 +16,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
+    sync::LazyLock,
 };
 
 fn identifier_ref(input: &str) -> IResult<&str, &str> {
@@ -145,9 +145,7 @@ fn preprocess_directive<'a>(
 }
 
 fn preprocess_expand_macros<'a>(line: &'a str, defs: &HashMap<String, String>) -> String {
-    lazy_static! {
-        static ref RE: Regex = Regex::new(r"\$\(([a-zA-Z0-9_.]+)\)").unwrap();
-    }
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\(([a-zA-Z0-9_.]+)\)").unwrap());
     RE.replace_all(line, |caps: &regex::Captures| {
         let cap = &caps[1];
         defs.get(cap).expect(cap)

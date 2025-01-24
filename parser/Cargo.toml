@@ -6,6 +6,5 @@ publish = false
 
 [dependencies]
 sleigh-types = { path = "../types" }
-lazy_static = "1.5.0"
 nom = "7.1.3"
 regex = "1.11.1"
