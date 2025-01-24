@@ -116,12 +116,12 @@ enum Subtable<'a> {
     Root,
 }
 
-impl<'a> LiveSymbol<'a> {
+impl LiveSymbol<'_> {
     fn to_type(self) -> TokenStream {
         match self {
-            LiveSymbol::Subtable(s) => s.to_type(),
+            LiveSymbol::Subtable(s) => s.gen_type(),
             LiveSymbol::Value(s) => s.qualified_name.clone(),
-            LiveSymbol::ContextBlockItem(s) => s.to_type(),
+            LiveSymbol::ContextBlockItem(s) => s.gen_type(),
         }
     }
 
@@ -148,7 +148,7 @@ impl<'a> LiveSymbol<'a> {
     }
 }
 
-impl<'a> ReadableSymbol<'a> {
+impl ReadableSymbol<'_> {
     fn gen_read(
         self,
         generator: &RustCodeGenerator,
@@ -172,7 +172,7 @@ impl<'a> ReadableSymbol<'a> {
     }
 }
 
-impl<'a> Subtable<'a> {
+impl Subtable<'_> {
     fn name(&self) -> Ident {
         match self {
             Subtable::Singleton(NonRootSingletonConstructor { name, .. })
@@ -181,21 +181,21 @@ impl<'a> Subtable<'a> {
         }
     }
 
-    fn to_type(&self) -> TokenStream {
+    fn gen_type(&self) -> TokenStream {
         let name = self.name();
         quote!(#name)
     }
 
     fn gen_call_disasm(&self, input: &TokenStream, inst_next: &TokenStream) -> TokenStream {
-        let typ = self.to_type();
+        let typ = self.gen_type();
         quote! {
             #input.and_then(|input| #typ::disasm(input, #inst_next, context))
         }
     }
 }
 
-impl<'a> ContextItemSymbol<'a> {
-    fn to_type(&self) -> TokenStream {
+impl ContextItemSymbol<'_> {
+    fn gen_type(&self) -> TokenStream {
         make_int_type(self.size, false).to_token_stream()
     }
 
@@ -237,7 +237,7 @@ fn collect_to_map_vec<K: Ord, V>(iter: impl Iterator<Item = (K, V)>) -> BTreeMap
     })
 }
 
-fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
+fn make_root_table(ctx: &SleighContext) -> RootTable<'_> {
     let iter = ctx
         .symbols
         .iter()
@@ -251,7 +251,7 @@ fn make_root_table<'a>(ctx: &'a SleighContext) -> RootTable<'a> {
             [DisplayToken::Symbol(mnemonic), ..] => Some((mnemonic, constructor)),
             _ => None,
         })
-        .map(|(mnemonic, constructor)| (symbol_to_type_ident(&mnemonic), constructor));
+        .map(|(mnemonic, constructor)| (symbol_to_type_ident(mnemonic), constructor));
     collect_to_map_vec(iter)
 }
 
@@ -298,7 +298,7 @@ fn make_token_fields(ctx: &SleighContext) -> BTreeMap<&str, TokenFieldData> {
         .iter()
         .filter_map(|(symbol, data)| match data {
             SymbolData::Value { field, attached } => {
-                let name = symbol_to_type_ident(&symbol);
+                let name = symbol_to_type_ident(symbol);
                 let parent = symbol_to_mod_ident(&field.parent_info.name);
                 let qualified_name = quote!(#parent::#name);
                 let parent_size = field.parent_info.size;
@@ -425,7 +425,7 @@ fn make_non_root_multi_ctors(ctx: &SleighContext) -> BTreeMap<&str, MultiConstru
         .collect()
 }
 
-fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor> {
+fn make_mnemonic_enums(root_table: &RootTable<'_>) -> Vec<MultiConstructor> {
     root_table
         .iter()
         .filter(|(_, ctors)| ctors.len() > 1)
@@ -454,7 +454,7 @@ fn make_mnemonic_enums<'a>(root_table: &RootTable<'a>) -> Vec<MultiConstructor> 
         .collect()
 }
 
-fn make_instruction_enum<'a>(root_table: &RootTable<'a>) -> Vec<InstructionEnumVariant> {
+fn make_instruction_enum(root_table: &RootTable<'_>) -> Vec<InstructionEnumVariant> {
     root_table
         .iter()
         .map(|(mnemonic, constructors)| {
@@ -522,12 +522,8 @@ impl<'a> RustCodeGenerator<'a> {
         } else {
             self.non_root_sing_ctors
                 .get(name)
-                .map(|c| Subtable::Singleton(c))
-                .or_else(|| {
-                    self.non_root_mult_ctors
-                        .get(name)
-                        .map(|c| Subtable::Multi(c))
-                })
+                .map(Subtable::Singleton)
+                .or_else(|| self.non_root_mult_ctors.get(name).map(Subtable::Multi))
         }
     }
 
@@ -795,7 +791,7 @@ impl<'a> RustCodeGenerator<'a> {
             .values()
             .map(|nrsc @ NonRootSingletonConstructor { name, .. }| {
                 let destruct_stmt = self.gen_destruct_stmt(nrsc);
-                let writes = self.gen_display_write_stmts(&nrsc.ctor);
+                let writes = self.gen_display_write_stmts(nrsc.ctor);
                 let body = quote! {
                     #destruct_stmt
                     #writes
@@ -839,7 +835,7 @@ impl<'a> RustCodeGenerator<'a> {
     fn iter_display_tok_fields(
         &'a self,
         ctor: &'a Constructor<OffAndSize>,
-    ) -> impl Iterator<Item = (Option<(usize, LiveSymbol)>, &'a DisplayToken)> {
+    ) -> impl Iterator<Item = (Option<(usize, LiveSymbol<'a>)>, &'a DisplayToken)> {
         let toks = &ctor.display.toks;
 
         // Skip first token if it's a space

@@ -144,7 +144,7 @@ fn preprocess_directive<'a>(
     )(input)
 }
 
-fn preprocess_expand_macros<'a>(line: &'a str, defs: &HashMap<String, String>) -> String {
+fn preprocess_expand_macros(line: &str, defs: &HashMap<String, String>) -> String {
     static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\(([a-zA-Z0-9_.]+)\)").unwrap());
     RE.replace_all(line, |caps: &regex::Captures| {
         let cap = &caps[1];
@@ -1160,11 +1160,9 @@ fn spaces_comments(input: &str) -> IResult<&str, ()> {
     value((), many0(alt((value((), multispace1), comment))))(input)
 }
 
-fn ws<'a, F: 'a, O>(
-    inner: F,
-) -> impl FnMut(&'a str) -> IResult<&'a str, O, nom::error::Error<&'a str>>
+fn ws<'a, F, O>(inner: F) -> impl FnMut(&'a str) -> IResult<&'a str, O, nom::error::Error<&'a str>>
 where
-    F: FnMut(&'a str) -> IResult<&'a str, O, nom::error::Error<&'a str>>,
+    F: 'a + FnMut(&'a str) -> IResult<&'a str, O, nom::error::Error<&'a str>>,
 {
     delimited(spaces_comments, inner, spaces_comments)
 }
@@ -1217,7 +1215,7 @@ impl<O: Clone> OpTable<O> {
     }
 
     fn lookup(&self, t: &str) -> Option<&'static str> {
-        self.op_tags.get(t).map(|t| *t)
+        self.op_tags.get(t).copied()
     }
 }
 
@@ -1233,7 +1231,7 @@ where
     F: Fn(&'a str) -> IResult<&'a str, E, nom::error::Error<&'a str>>,
     B: Fn(O, E, E) -> E,
 {
-    fn peek_op<'a, O>(input: &'a str, ops: &OpTable<O>) -> Option<&'static str>
+    fn peek_op<O>(input: &str, ops: &OpTable<O>) -> Option<&'static str>
     where
         O: Clone,
     {
@@ -1259,7 +1257,7 @@ where
         F: Fn(&'a str) -> IResult<&'a str, E, nom::error::Error<&'a str>>,
         B: Fn(O, E, E) -> E,
     {
-        let mut lookahead = peek_op(*input, ops);
+        let mut lookahead = peek_op(input, ops);
 
         // While lookahead is a binary operator whose precedence is >=
         // min_precedence
@@ -1271,12 +1269,12 @@ where
             }
 
             // Advance to next token
-            (*input, _) = tok(op)(*input)?;
+            (*input, _) = tok(op)(input)?;
 
-            let (new_input, mut rhs) = e(*input)?;
+            let (new_input, mut rhs) = e(input)?;
             *input = new_input;
 
-            lookahead = peek_op(*input, ops);
+            lookahead = peek_op(input, ops);
 
             // While lookahead is a binary operator whose precedence is greater
             // than op's
@@ -1287,7 +1285,7 @@ where
                     break;
                 }
                 (*input, rhs) = op_prec_1(rhs, op_prec + 1, ops, e, bin_op_func, input)?;
-                lookahead = peek_op(*input, ops);
+                lookahead = peek_op(input, ops);
             }
             let op_val = ops.op_values.get(op).unwrap();
             lhs = bin_op_func(op_val.clone(), lhs, rhs);

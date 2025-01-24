@@ -122,7 +122,7 @@ impl SleighContext {
         } else {
             match self.symbols.get(symbol).unwrap() {
                 SymbolData::Subtable(c) => {
-                    Some(c.get(0).unwrap().p_equation.type_data.size.unwrap())
+                    Some(c.first().unwrap().p_equation.type_data.size.unwrap())
                 }
                 SymbolData::Value { field, .. } => Some(field.parent_info.size.into()),
                 SymbolData::VarNode { size, .. } => Some(*size),
@@ -440,7 +440,6 @@ impl SleighContext {
                 };
                 let mut graph = Graph::<usize, ()>::new();
                 let nodes = (0..patterns.len())
-                    .into_iter()
                     .map(|i| graph.add_node(i))
                     .collect::<Vec<NodeIndex>>();
                 let edges = nodes
@@ -596,20 +595,20 @@ impl SleighContext {
             ..
         }) = self.symbols.get(symbol)
         {
-            compute_bit_range(u64::from(*input.get(0).unwrap()), *low, *high)
+            compute_bit_range(u64::from(*input.first().unwrap()), *low, *high)
         } else {
             panic!("token field {symbol} not found")
         }
     }
 
-    fn compute_p_expression(&self, expr: &PExpression) -> u64 {
+    fn compute_p_expression(expr: &PExpression) -> u64 {
         match expr {
             PExpression::ConstantValue(v) => *v,
             PExpression::Symbol(_) => todo!(),
             PExpression::Bin(binary_expr) => {
                 let PExpressionBin { op, l, r } = &**binary_expr;
-                let l = self.compute_p_expression(l);
-                let r = self.compute_p_expression(r);
+                let l = Self::compute_p_expression(l);
+                let r = Self::compute_p_expression(r);
                 match op {
                     PExpressionBinOp::Add => l + r,
                     PExpressionBinOp::Sub => l - r,
@@ -624,7 +623,7 @@ impl SleighContext {
             }
             PExpression::Unary(unary_expr) => {
                 let PExpressionUnary { op, operand } = &**unary_expr;
-                let operand = self.compute_p_expression(operand);
+                let operand = Self::compute_p_expression(operand);
                 match op {
                     PExpressionUnaryOp::Minus => -(operand as i64) as u64,
                     PExpressionUnaryOp::Not => !operand,
@@ -652,20 +651,19 @@ impl SleighContext {
                 match atomic {
                     Atomic::Constraint(constraint) => match constraint {
                         Constraint::Compare(ConstraintCompare { op, symbol, expr }) => {
-                            let l = self.compute_token_symbol(&symbol, input);
-                            let r = self.compute_p_expression(&expr);
-                            let l = l as u64;
+                            let l = self.compute_token_symbol(symbol, input);
+                            let r = Self::compute_p_expression(expr);
                             op.call(l, r)
                         }
                         Constraint::Symbol(_) => true,
                     },
-                    Atomic::Parenthesized(p_eq) => self.check_p_equation(&p_eq, input),
+                    Atomic::Parenthesized(p_eq) => self.check_p_equation(p_eq, input),
                 }
             }
             PatternEquationInner::Bin(bin) => {
                 let PatternEquationBin { op, l, r } = &**bin;
-                let l = self.check_p_equation(&l, input);
-                let r = self.check_p_equation(&r, input);
+                let l = self.check_p_equation(l, input);
+                let r = self.check_p_equation(r, input);
                 match op {
                     PatternEquationBinOp::And | PatternEquationBinOp::Cat => l && r,
                     PatternEquationBinOp::Or => l || r,
@@ -684,16 +682,16 @@ impl SleighContext {
                     for tok in &constructor.display.toks {
                         match tok {
                             DisplayToken::Caret => {}
-                            DisplayToken::String(s) => out.push_str(&s),
+                            DisplayToken::String(s) => out.push_str(s),
                             DisplayToken::Char(c) => out.push(*c),
                             DisplayToken::Space => out.push(' '),
                             DisplayToken::Symbol(s) => {
                                 if let Some(OffAndSize { off, size: _ }) =
-                                    p_equation_symm_off(&constructor.p_equation, &s)
+                                    p_equation_symm_off(&constructor.p_equation, s)
                                 {
-                                    self.disasm_insn(off, &s, input, out)
+                                    self.disasm_insn(off, s, input, out)
                                 } else {
-                                    out.push_str(&s)
+                                    out.push_str(s)
                                 }
                             }
                         }
@@ -933,9 +931,9 @@ impl BitAnd for PatternBlock {
             ) => {
                 assert_eq!(mask1.len, value1.len);
                 assert_eq!(mask2.len, value2.len);
-                let mask_intersection = mask1.clone() & mask2.clone();
-                let masked1 = value1.clone() & mask_intersection.clone();
-                let masked2 = value2.clone() & mask_intersection.clone();
+                let mask_intersection = mask1 & mask2;
+                let masked1 = value1 & mask_intersection;
+                let masked2 = value2 & mask_intersection;
                 if masked1 == masked2 {
                     Self::Block {
                         mask: mask1 | mask2,
@@ -1026,7 +1024,7 @@ impl OrPattern {
             disjoint_patterns: self
                 .disjoint_patterns
                 .into_iter()
-                .zip(other.disjoint_patterns.into_iter())
+                .zip(other.disjoint_patterns)
                 .map(|(a, b)| a.cat(b))
                 .collect(),
         }
@@ -1053,7 +1051,7 @@ impl OrPattern {
                 .disjoint_patterns
                 .clone()
                 .into_iter()
-                .any(|b| a.clone().subset(b))
+                .any(|b| a.subset(b))
         })
     }
 
@@ -1078,7 +1076,7 @@ impl BitAnd for OrPattern {
             disjoint_patterns: self
                 .disjoint_patterns
                 .into_iter()
-                .cartesian_product(rhs.disjoint_patterns.into_iter())
+                .cartesian_product(rhs.disjoint_patterns)
                 .map(|(a, b)| a & b)
                 .collect::<Vec<CombinedPattern>>(),
         }
