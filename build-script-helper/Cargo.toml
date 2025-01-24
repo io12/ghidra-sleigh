@@ -8,5 +8,5 @@ publish = false
 sleigh-parser = { path = "../parser" }
 sleigh-types = { path = "../types" }
 sleigh-generator = { path = "../generator" }
-prettyplease = "0.1.22"
-syn = "1.0.107"
+prettyplease = "0.1.25"
+syn = "1.0.109"

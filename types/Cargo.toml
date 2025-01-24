@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 bitvec = "1.0.1"
-derive_more = "0.99.17"
+derive_more = "0.99.18"
 itertools = "0.10.5"
-petgraph = "0.6.2"
+petgraph = "0.6.5"
 
