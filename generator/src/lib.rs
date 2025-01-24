@@ -618,8 +618,12 @@ impl<'a> RustCodeGenerator<'a> {
             inner: EnumVariant { name, .. },
         }: &CtorEnumVariant,
     ) -> TokenStream {
+        let doc = format!("Displays as `{}`", ctor.display);
         let tuple_type = self.gen_tuple_type(false, ctor);
-        quote! { #name #tuple_type , }
+        quote! {
+            #[doc = #doc]
+            #name #tuple_type ,
+        }
     }
 
     fn gen_multi_ctors(&self, iter: impl Iterator<Item = &'a MultiConstructor>) -> TokenStream {
@@ -630,6 +634,7 @@ impl<'a> RustCodeGenerator<'a> {
                 .map(|variant| self.gen_enum_variant(variant))
                 .collect::<TokenStream>();
             quote! {
+                #[doc = "An instruction component"]
                 #derives
                 pub enum #name {
                     #variants
@@ -656,12 +661,17 @@ impl<'a> RustCodeGenerator<'a> {
                     ctor,
                     inner: EnumVariant { name, .. },
                 }) => {
+                    let doc = format!("Displays as `{}`", ctor.display);
                     let tuple_type = self.gen_tuple_type(false, ctor);
-                    quote! { #name #tuple_type , }
+                    quote! {
+                        #[doc = #doc]
+                        #name #tuple_type ,
+                    }
                 }
             })
             .collect::<TokenStream>();
         quote! {
+            #[doc = "The main top-level instruction type"]
             #derives
             pub enum Instruction {
                 #variants
@@ -688,6 +698,7 @@ impl<'a> RustCodeGenerator<'a> {
                              ..
                          }| {
                             quote! {
+                                #[doc = "This is a token. It can represent an immediate value or a register, depending on the token. TODO: The register tokens should probably be enums with the register options."]
                                 #derives
                                 pub struct #name(pub #inner_int_type);
                             }
@@ -695,6 +706,7 @@ impl<'a> RustCodeGenerator<'a> {
                     )
                     .collect::<TokenStream>();
                 quote! {
+                    #[doc = "A category of tokens"]
                     pub mod #parent {
                         #fields
                     }
@@ -708,8 +720,10 @@ impl<'a> RustCodeGenerator<'a> {
         self.non_root_sing_ctors
             .values()
             .map(|NonRootSingletonConstructor { name, ctor, .. }| {
+                let doc = format!("This instruction component displays as `{}`, where symbols are other types in this crate.", ctor.display);
                 let tuple_type = self.gen_tuple_type(true, ctor);
                 quote! {
+                    #[doc = #doc]
                     #derives
                     pub struct #name #tuple_type ;
                 }
@@ -1235,6 +1249,7 @@ impl<'a> RustCodeGenerator<'a> {
             .collect::<TokenStream>();
         quote! {
             impl Instruction {
+                #[doc = "Disassemble an instruction\n\nParameters:\n- `input` - the input bytes to disassemble\n- `addr` - the offset of `input` in memory\n- `context` - context register containing CPU mode (TODO: add constructors for common modes)"]
                 pub fn disasm(
                     input: &[u8],
                     addr: #addr_int_type,
